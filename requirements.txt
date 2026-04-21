@@ -1,0 +1,9 @@
+# Core HTTP client — used by CLI and web UI
+requests>=2.28
+
+# Web UI
+flask>=2.3
+
+# mDNS/Bonjour device discovery (optional — web UI falls back to manual IP
+# entry if this isn't installed, but you want it)
+zeroconf>=0.130

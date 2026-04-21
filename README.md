@@ -28,7 +28,7 @@ There are two interfaces to the same underlying logic:
 Requires Python 3.9 or later.
 
 ```
-git clone https://github.com/YOUR-USERNAME/wiim-autoeq.git
+git clone https://github.com/weidercs/wiim-autoeq.git
 cd wiim-autoeq
 pip install -r requirements.txt
 ```

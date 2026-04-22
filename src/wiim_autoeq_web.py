@@ -607,7 +607,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   <!-- ── WiiM connection ─────────────────────────────────────────── -->
   <div class="card">
-    <h2>1. WiiM device</h2>
+    <h2>WiiM device</h2>
 
     <!-- Discovered devices dropdown (default view) -->
     <div id="discovered-view">
@@ -656,7 +656,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   <!-- ── Headphone selection ─────────────────────────────────────── -->
   <div class="card">
-    <h2>2. Headphone</h2>
+    <h2>Headphone</h2>
     <label for="hp-search">Search the AutoEQ database (~6000 headphones)</label>
     <div class="hp-dropdown">
       <input type="text" id="hp-search" placeholder="loading list…" autocomplete="off" disabled>
@@ -667,7 +667,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   <!-- ── Options ─────────────────────────────────────────────────── -->
   <div class="card">
-    <h2>3. Options</h2>
+    <h2>Options</h2>
     <div class="two-col">
       <div>
         <label for="source">WiiM input source</label>
@@ -720,7 +720,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   <!-- ── EQ band editor (hidden until profile loaded) ───────────── -->
   <div class="card" id="eq-editor" style="display:none;">
-    <h2>4. EQ bands <span class="badge" style="text-transform:none;font-size:11px;">editable</span></h2>
+    <h2>EQ bands <span class="badge" style="text-transform:none;font-size:11px;">editable</span></h2>
     <div id="preamp-info" class="muted" style="margin-bottom:10px;font-size:13px;"></div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
       <span style="font-size:13px;color:var(--muted);">Additional preamp offset</span>

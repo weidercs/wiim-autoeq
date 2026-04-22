@@ -713,8 +713,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <!-- ── EQ band editor (hidden until profile loaded) ───────────── -->
   <div class="card" id="eq-editor" style="display:none;">
     <h2>4. EQ bands <span class="badge" style="text-transform:none;font-size:11px;">editable</span></h2>
-    <div id="preamp-info" class="muted" style="margin-bottom:12px;font-size:13px;"></div>
-    <canvas id="eq-graph" style="width:100%;height:180px;display:block;border-radius:6px;margin-bottom:14px;"></canvas>
+    <div id="preamp-info" class="muted" style="margin-bottom:10px;font-size:13px;"></div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+      <span style="font-size:13px;color:var(--muted);">Preamp offset</span>
+      <input type="number" id="preamp-input" value="0" step="0.5" min="-30" max="30"
+             style="width:72px;padding:3px 6px;font-size:13px;font-family:inherit;
+                    background:var(--panel-2);color:var(--text);
+                    border:1px solid var(--border);border-radius:4px;">
+      <span style="font-size:12px;color:var(--muted);">dB — or drag the slider on the right of the graph</span>
+    </div>
+    <canvas id="eq-graph" style="width:100%;height:190px;display:block;border-radius:6px;margin-bottom:14px;cursor:default;"></canvas>
     <div id="band-edit-container"></div>
     <div class="row" style="margin-top:14px;">
       <div class="shrink">
@@ -767,6 +775,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const confirmApplyBtn = $("confirm-apply-btn");
   const resetBandsBtn   = $("reset-bands-btn");
   const confirmStat     = $("confirm-status");
+  const preampInput     = $("preamp-input");
 
   let headphones = [];
   let selectedHp = null;      // { name, path }
@@ -774,6 +783,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   let filterActive = 0;       // index of currently-highlighted dropdown item
   let mode = "discovered";    // "discovered" | "manual"
   let loadedProfile = null;   // response from /api/preview-peq
+  let preampDB = 0;           // cumulative preamp offset currently applied to the table
+  let isDraggingPreamp = false;
 
   function setStatus(el, text, cls) {
     el.textContent = text;
@@ -1029,6 +1040,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   function hideEditor() {
     eqEditor.style.display = "none";
     loadedProfile = null;
+    preampDB = 0;
+    preampInput.value = "0";
     setStatus(confirmStat, "", "");
   }
 
@@ -1130,7 +1143,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const ctx = canvas.getContext("2d");
     ctx.scale(dpr, dpr);
     const W = rect.width, H = rect.height;
-    const pad = { top: 14, right: 14, bottom: 26, left: 38 };
+    const pad = { top: 14, right: 48, bottom: 26, left: 38 };
     const gW = W - pad.left - pad.right, gH = H - pad.top - pad.bottom;
 
     // Adaptive colours from CSS variables
@@ -1205,12 +1218,135 @@ INDEX_HTML = r"""<!DOCTYPE html>
     ctx.lineWidth = 2;
     ctx.lineJoin = "round";
     ctx.stroke();
+
+    // ── Preamp slider ────────────────────────────────────────────────
+    const sliderX  = W - 20;
+    const trackTop = pad.top;
+    const trackBot = pad.top + gH;
+    const clampedP = Math.max(DB_MIN, Math.min(DB_MAX, preampDB));
+    const handleY  = yOf(clampedP);
+    const warnClr  = cs.getPropertyValue("--warn").trim() || "#ffb84d";
+
+    // Dashed reference line across graph at preamp level (when non-zero)
+    if (preampDB !== 0) {
+      ctx.strokeStyle = warnClr;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.globalAlpha = 0.55;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, handleY);
+      ctx.lineTo(sliderX - 10, handleY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
+
+    // Track
+    ctx.strokeStyle = gridClr;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(sliderX, trackTop);
+    ctx.lineTo(sliderX, trackBot);
+    ctx.stroke();
+
+    // Handle
+    const hR = 9;
+    ctx.fillStyle = isDraggingPreamp || preampDB !== 0 ? warnClr : gridClr;
+    ctx.beginPath();
+    ctx.arc(sliderX, handleY, hR, 0, 2 * Math.PI);
+    ctx.fill();
+
+    // Value label inside handle
+    ctx.fillStyle = "#000";
+    ctx.font = `bold 8px system-ui,sans-serif`;
+    ctx.textAlign = "center";
+    const lbl = preampDB === 0 ? "0" : `${preampDB > 0 ? "+" : ""}${preampDB.toFixed(1)}`;
+    ctx.fillText(lbl, sliderX, handleY + 3);
+
+    // "PRE" caption above track
+    ctx.fillStyle = labelClr;
+    ctx.font = `9px system-ui,sans-serif`;
+    ctx.fillText("PRE", sliderX, trackTop - 3);
   }
 
   // Redraw on any band-table input change
   bandEditCont.addEventListener("input",  () => drawEqCurve());
   bandEditCont.addEventListener("change", () => drawEqCurve());
   window.addEventListener("resize", () => { if (eqEditor.style.display !== "none") drawEqCurve(); });
+
+  // ── Preamp offset control ─────────────────────────────────────────
+  function applyPreampDelta(delta) {
+    if (delta === 0) return;
+    bandEditCont.querySelectorAll(".band-gain").forEach(inp => {
+      inp.value = (Math.round((parseFloat(inp.value) + delta) * 10) / 10).toFixed(1);
+    });
+    preampDB = Math.round((preampDB + delta) * 10) / 10;
+    preampInput.value = preampDB.toFixed(1);
+    drawEqCurve();
+  }
+
+  function setPreamp(newVal) {
+    newVal = Math.max(-30, Math.min(30, Math.round(newVal * 10) / 10));
+    applyPreampDelta(newVal - preampDB);
+  }
+
+  preampInput.addEventListener("change", () => setPreamp(parseFloat(preampInput.value) || 0));
+  preampInput.addEventListener("input",  () => {
+    const v = parseFloat(preampInput.value);
+    if (isFinite(v)) setPreamp(v);
+  });
+
+  // Convert canvas Y coordinate → dB value
+  function yToPreampDB(canvasY) {
+    const rect = eqCanvas.getBoundingClientRect();
+    const padTop = 14, gH = rect.height - padTop - 26;
+    const frac = Math.max(0, Math.min(1, (canvasY - padTop) / gH));
+    return Math.round((15 - frac * 30) * 10) / 10;
+  }
+
+  // Check if a canvas-relative X is inside the slider hit zone
+  function inSliderZone(canvasX) {
+    return canvasX >= eqCanvas.getBoundingClientRect().width - 50;
+  }
+
+  eqCanvas.addEventListener("mousedown", e => {
+    const rect = eqCanvas.getBoundingClientRect();
+    if (inSliderZone(e.clientX - rect.left)) {
+      isDraggingPreamp = true;
+      setPreamp(yToPreampDB(e.clientY - rect.top));
+      e.preventDefault();
+    }
+  });
+  document.addEventListener("mousemove", e => {
+    if (!isDraggingPreamp) return;
+    const rect = eqCanvas.getBoundingClientRect();
+    setPreamp(yToPreampDB(e.clientY - rect.top));
+  });
+  document.addEventListener("mouseup", () => { isDraggingPreamp = false; drawEqCurve(); });
+
+  // Update cursor to grab when hovering over slider zone
+  eqCanvas.addEventListener("mousemove", e => {
+    const rect = eqCanvas.getBoundingClientRect();
+    eqCanvas.style.cursor = inSliderZone(e.clientX - rect.left) ? "ns-resize" : "default";
+  });
+  eqCanvas.addEventListener("mouseleave", () => { eqCanvas.style.cursor = "default"; });
+
+  eqCanvas.addEventListener("touchstart", e => {
+    const rect = eqCanvas.getBoundingClientRect();
+    const t = e.touches[0];
+    if (inSliderZone(t.clientX - rect.left)) {
+      isDraggingPreamp = true;
+      setPreamp(yToPreampDB(t.clientY - rect.top));
+      e.preventDefault();
+    }
+  }, { passive: false });
+  document.addEventListener("touchmove", e => {
+    if (!isDraggingPreamp) return;
+    const rect = eqCanvas.getBoundingClientRect();
+    setPreamp(yToPreampDB(e.touches[0].clientY - rect.top));
+    e.preventDefault();
+  }, { passive: false });
+  document.addEventListener("touchend", () => { isDraggingPreamp = false; drawEqCurve(); });
 
   // ── EQ band editor ───────────────────────────────────────────────
   function renderBandEditor(profile) {
@@ -1226,6 +1362,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     } else {
       preampInfo.textContent = "";
     }
+
+    preampDB = 0;
+    preampInput.value = "0";
 
     const bands = [...profile.bands].sort((a, b) => a.fc - b.fc);
 

@@ -88,7 +88,10 @@ def load_headphone_index() -> list[dict]:
     r.raise_for_status()
     body = r.text
 
-    link_re = re.compile(r"\[([^\]]+)\]\(\.?/?(\S+?)\)")
+    # Match markdown links. The URL may contain balanced (…) from headphone names
+    # (e.g. "Sony WH-1000XM4 (2021)"), so we use a pattern that allows one level
+    # of nested parens instead of a lazy \S+? that stops at the first ')'.
+    link_re = re.compile(r"\[([^\]]+)\]\(\.?/?((?:[^()\s]|\([^)]*\))*)\)")
     seen = set()
     items: list[dict] = []
     for name, path in link_re.findall(body):
@@ -113,7 +116,7 @@ def fetch_profile_from_path(folder_path: str) -> tuple[str, str]:
     fetch the ParametricEQ.txt and return (text, url)."""
     leaf = folder_path.rstrip("/").rsplit("/", 1)[-1]
     file_path = f"{folder_path.rstrip('/')}/{leaf} ParametricEQ.txt"
-    url = f"{AUTOEQ_RAW_BASE}/results/{urllib.parse.quote(file_path)}"
+    url = f"{AUTOEQ_RAW_BASE}/results/{urllib.parse.quote(file_path, safe='/()')}"
     r = requests.get(url, timeout=20)
     if r.status_code != 200:
         raise RuntimeError(

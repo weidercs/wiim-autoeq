@@ -166,8 +166,10 @@ def fetch_profile_by_name(
     readme.raise_for_status()
     body = readme.text
 
-    # Match markdown links of the form:  [Display Name](./path/to/folder)
-    link_re = re.compile(r"\[([^\]]+)\]\(\.?/?(\S+?)\)")
+    # Match markdown links. The URL may contain balanced (…) from headphone names
+    # (e.g. "Sony WH-1000XM4 (2021)"), so we use a pattern that allows one level
+    # of nested parens instead of a lazy \S+? that stops at the first ')'.
+    link_re = re.compile(r"\[([^\]]+)\]\(\.?/?((?:[^()\s]|\([^)]*\))*)\)")
     candidates = []
     wanted = name.lower().strip()
     for disp, path in link_re.findall(body):
@@ -206,7 +208,7 @@ def fetch_profile_by_name(
     # Folder name is the last path segment; AutoEQ names the PEQ file after it.
     leaf = folder.rstrip("/").rsplit("/", 1)[-1]
     file_path = f"{folder.rstrip('/')}/{leaf} ParametricEQ.txt"
-    url = f"{AUTOEQ_RAW_BASE}/results/{urllib.parse.quote(file_path)}"
+    url = f"{AUTOEQ_RAW_BASE}/results/{urllib.parse.quote(file_path, safe='/()')}"
 
     print(f"  → matched: {disp}", file=sys.stderr)
     print(f"  → fetching: {url}", file=sys.stderr)

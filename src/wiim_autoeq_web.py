@@ -1088,6 +1088,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
       preampInfo.textContent = "";
     }
 
+    const bands = [...profile.bands].sort((a, b) => a.fc - b.fc);
+
     let html = `<table class="band-table eq-editor-table">
       <thead><tr>
         <th>#</th>
@@ -1096,7 +1098,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <th class="col-gain">Gain (dB)</th>
         <th class="col-q">Q</th>
       </tr></thead><tbody>`;
-    profile.bands.forEach((b, i) => {
+    bands.forEach((b, i) => {
       const gain = b.gain_device !== undefined ? b.gain_device : b.gain;
       html += `<tr data-band="${i}">
         <td>${i}</td>

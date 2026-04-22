@@ -663,6 +663,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div id="hp-list" class="hp-list"></div>
     </div>
     <div id="hp-selected" class="muted" style="margin-top:8px;"></div>
+    <div style="margin-top:12px;">
+      <button id="apply-btn" class="primary" disabled>Load Profile</button>
+    </div>
+    <div id="apply-status" class="status"></div>
   </div>
 
   <!-- ── Options ─────────────────────────────────────────────────── -->
@@ -691,31 +695,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
         </select>
       </div>
     </div>
-    <div class="row" style="margin-top:12px;align-items:center;">
+    <div class="row" style="margin-top:12px;align-items:center;gap:8px;">
       <div class="shrink">
         <button id="load-device-eq-btn" disabled>Load current EQ from device</button>
-      </div>
-      <div class="muted" style="font-size:12px;">
-        Reads what's active on the WiiM for the selected source.
-      </div>
-    </div>
-    <div class="muted" style="margin-top: 8px;">
-      WiiM has no preamp slider. AutoEQ profiles expect one — subtracting it keeps levels safe.
-    </div>
-  </div>
-
-  <!-- ── Actions ─────────────────────────────────────────────────── -->
-  <div class="card">
-    <div class="row">
-      <div class="shrink">
-        <button id="apply-btn" class="primary" disabled>Load Profile</button>
       </div>
       <div class="shrink">
         <button id="off-btn" class="danger" disabled>Turn PEQ off</button>
       </div>
-      <div></div>
     </div>
-    <div id="apply-status" class="status"></div>
+    <div id="off-status" class="status"></div>
+    <div class="muted" style="margin-top: 8px;">
+      WiiM has no preamp slider. AutoEQ profiles expect one — subtracting it keeps levels safe.
+    </div>
   </div>
 
   <!-- ── EQ band editor (hidden until profile loaded) ───────────── -->
@@ -776,6 +767,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const applyBtn        = $("apply-btn");
   const offBtn          = $("off-btn");
   const applyStat       = $("apply-status");
+  const offStat         = $("off-status");
   const eqEditor        = $("eq-editor");
   const preampInfo      = $("preamp-info");
   const eqCanvas        = $("eq-graph");
@@ -1453,7 +1445,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   // ── Turn off ─────────────────────────────────────────────────────
   offBtn.addEventListener("click", async () => {
-    setStatus(applyStat, "turning PEQ off on " + sourceSel.value + "…", "");
+    setStatus(offStat, "turning PEQ off on " + sourceSel.value + "…", "");
     applyBtn.disabled = true; offBtn.disabled = true;
     try {
       const r = await fetch("/api/peq-off", {
@@ -1466,10 +1458,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
         }),
       });
       const j = await r.json();
-      if (j.ok) setStatus(applyStat, "✓ PEQ turned off on " + sourceSel.value + ".", "ok");
-      else      setStatus(applyStat, "✗ " + (j.error || "failed"), "err");
+      if (j.ok) setStatus(offStat, "✓ PEQ turned off on " + sourceSel.value + ".", "ok");
+      else      setStatus(offStat, "✗ " + (j.error || "failed"), "err");
     } catch (e) {
-      setStatus(applyStat, "✗ request failed: " + e.message, "err");
+      setStatus(offStat, "✗ request failed: " + e.message, "err");
     } finally {
       refreshApplyBtn();
     }

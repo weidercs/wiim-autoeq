@@ -714,6 +714,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div class="card" id="eq-editor" style="display:none;">
     <h2>4. EQ bands <span class="badge" style="text-transform:none;font-size:11px;">editable</span></h2>
     <div id="preamp-info" class="muted" style="margin-bottom:12px;font-size:13px;"></div>
+    <canvas id="eq-graph" style="width:100%;height:180px;display:block;border-radius:6px;margin-bottom:14px;"></canvas>
     <div id="band-edit-container"></div>
     <div class="row" style="margin-top:14px;">
       <div class="shrink">
@@ -761,6 +762,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const applyStat       = $("apply-status");
   const eqEditor        = $("eq-editor");
   const preampInfo      = $("preamp-info");
+  const eqCanvas        = $("eq-graph");
   const bandEditCont    = $("band-edit-container");
   const confirmApplyBtn = $("confirm-apply-btn");
   const resetBandsBtn   = $("reset-bands-btn");
@@ -1073,6 +1075,143 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
   });
 
+  // ── EQ frequency-response graph ──────────────────────────────────
+  function biquadCoeffs(type, fc, gainDB, q) {
+    const Fs = 48000;
+    const A   = Math.pow(10, gainDB / 40);
+    const w0  = 2 * Math.PI * fc / Fs;
+    const cw  = Math.cos(w0), sw = Math.sin(w0);
+    const alp = sw / (2 * q);
+    const sqA = Math.sqrt(A);
+    let b0, b1, b2, a0, a1, a2;
+    if (type === "PK") {
+      b0 = 1 + alp * A;  b1 = -2 * cw;  b2 = 1 - alp * A;
+      a0 = 1 + alp / A;  a1 = -2 * cw;  a2 = 1 - alp / A;
+    } else if (type === "LSC") {
+      b0 = A * ((A+1) - (A-1)*cw + 2*sqA*alp);
+      b1 = 2 * A * ((A-1) - (A+1)*cw);
+      b2 = A * ((A+1) - (A-1)*cw - 2*sqA*alp);
+      a0 = (A+1) + (A-1)*cw + 2*sqA*alp;
+      a1 = -2 * ((A-1) + (A+1)*cw);
+      a2 = (A+1) + (A-1)*cw - 2*sqA*alp;
+    } else {  // HSC
+      b0 = A * ((A+1) + (A-1)*cw + 2*sqA*alp);
+      b1 = -2 * A * ((A-1) + (A+1)*cw);
+      b2 = A * ((A+1) + (A-1)*cw - 2*sqA*alp);
+      a0 = (A+1) - (A-1)*cw + 2*sqA*alp;
+      a1 = 2 * ((A-1) - (A+1)*cw);
+      a2 = (A+1) - (A-1)*cw - 2*sqA*alp;
+    }
+    return [b0/a0, b1/a0, b2/a0, a1/a0, a2/a0];
+  }
+
+  function evalDB(coeffsList, freq) {
+    const Fs = 48000;
+    const w  = 2 * Math.PI * freq / Fs;
+    const cw = Math.cos(w), sw = Math.sin(w);
+    const c2w = Math.cos(2*w), s2w = Math.sin(2*w);
+    let db = 0;
+    for (const [b0, b1, b2, a1, a2] of coeffsList) {
+      const nr = b0 + b1*cw + b2*c2w,  ni = -(b1*sw + b2*s2w);
+      const dr = 1  + a1*cw + a2*c2w,  di = -(a1*sw + a2*s2w);
+      db += 10 * Math.log10(Math.max((nr*nr + ni*ni) / (dr*dr + di*di), 1e-30));
+    }
+    return db;
+  }
+
+  function drawEqCurve() {
+    const canvas = eqCanvas;
+    if (!canvas) return;
+    const dpr  = window.devicePixelRatio || 1;
+    const rect  = canvas.getBoundingClientRect();
+    if (rect.width === 0) return;
+    canvas.width  = rect.width  * dpr;
+    canvas.height = rect.height * dpr;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    const W = rect.width, H = rect.height;
+    const pad = { top: 14, right: 14, bottom: 26, left: 38 };
+    const gW = W - pad.left - pad.right, gH = H - pad.top - pad.bottom;
+
+    // Adaptive colours from CSS variables
+    const cs  = getComputedStyle(document.documentElement);
+    const bg        = cs.getPropertyValue("--panel-2").trim();
+    const gridClr   = cs.getPropertyValue("--border").trim();
+    const labelClr  = cs.getPropertyValue("--muted").trim();
+    const curveClr  = cs.getPropertyValue("--accent").trim();
+
+    ctx.fillStyle = bg;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(0, 0, W, H, 6);
+    else ctx.rect(0, 0, W, H);
+    ctx.fill();
+
+    const DB_MAX = 15, DB_MIN = -15;
+    const xOf = f  => pad.left + Math.log10(f / 20) / Math.log10(1000) * gW;
+    const yOf = db => pad.top  + (1 - (db - DB_MIN) / (DB_MAX - DB_MIN)) * gH;
+
+    // Frequency grid
+    ctx.font = `10px system-ui,sans-serif`;
+    ctx.textAlign = "center";
+    for (const [f, lbl] of [[20,"20"],[50,"50"],[100,"100"],[200,"200"],[500,"500"],
+                             [1000,"1k"],[2000,"2k"],[5000,"5k"],[10000,"10k"],[20000,"20k"]]) {
+      const x = xOf(f);
+      ctx.strokeStyle = gridClr; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, pad.top); ctx.lineTo(x, pad.top + gH); ctx.stroke();
+      ctx.fillStyle = labelClr; ctx.fillText(lbl, x, H - 5);
+    }
+
+    // dB grid
+    ctx.textAlign = "right";
+    for (const db of [-12, -9, -6, -3, 0, 3, 6, 9, 12]) {
+      const y = yOf(db);
+      ctx.strokeStyle = db === 0 ? labelClr : gridClr;
+      ctx.lineWidth   = db === 0 ? 1.5 : 1;
+      ctx.setLineDash(db === 0 ? [] : [3, 3]);
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + gW, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = labelClr;
+      ctx.fillText(`${db > 0 ? "+" : ""}${db}`, pad.left - 4, y + 3);
+    }
+
+    // Build coefficients for each active band
+    const bands = getBandsFromTable().filter(b => isFinite(b.fc) && isFinite(b.gain) && isFinite(b.q) && b.q > 0);
+    const coeffsList = bands.map(b => biquadCoeffs(b.type, b.fc, b.gain, b.q));
+
+    // Evaluate at 400 log-spaced frequencies 20 Hz → 20 kHz
+    const N = 400;
+    const pts = [];
+    for (let i = 0; i < N; i++) {
+      const f  = 20 * Math.pow(1000, i / (N - 1));
+      const db = Math.max(DB_MIN, Math.min(DB_MAX, evalDB(coeffsList, f)));
+      pts.push([xOf(f), yOf(db)]);
+    }
+
+    // Filled area
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], yOf(0));
+    pts.forEach(([x, y]) => ctx.lineTo(x, y));
+    ctx.lineTo(pts[N-1][0], yOf(0));
+    ctx.closePath();
+    ctx.fillStyle = curveClr;
+    ctx.globalAlpha = 0.15;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Curve line
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y));
+    ctx.strokeStyle = curveClr;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+  }
+
+  // Redraw on any band-table input change
+  bandEditCont.addEventListener("input",  () => drawEqCurve());
+  bandEditCont.addEventListener("change", () => drawEqCurve());
+  window.addEventListener("resize", () => { if (eqEditor.style.display !== "none") drawEqCurve(); });
+
   // ── EQ band editor ───────────────────────────────────────────────
   function renderBandEditor(profile) {
     if (profile._fromDevice) {
@@ -1114,6 +1253,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     });
     html += `</tbody></table>`;
     bandEditCont.innerHTML = html;
+    // Defer one frame so the canvas has its final layout size before drawing
+    requestAnimationFrame(drawEqCurve);
   }
 
   function getBandsFromTable() {

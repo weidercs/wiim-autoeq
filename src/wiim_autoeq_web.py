@@ -3,7 +3,7 @@
 wiim_autoeq_web.py — a local web UI for wiim_autoeq.py
 
 Runs a tiny Flask server at http://127.0.0.1:5173/ with a single-page UI:
-  1) enter your WiiM's IP and click "Test connection"
+  1) enter your WiiM's IP and click "Connect"
   2) search for your headphone from the AutoEQ list (~6000 models)
   3) click "Apply PEQ" to push the profile to your WiiM
 
@@ -622,7 +622,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
           <button id="refresh-btn" title="Scan again">Refresh</button>
         </div>
         <div class="shrink">
-          <button id="test-btn" class="primary">Test connection</button>
+          <button id="test-btn" class="primary">Connect</button>
         </div>
       </div>
       <div class="muted" style="margin-top:8px;">
@@ -639,7 +639,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
           <input type="text" id="ip-manual" placeholder="192.168.1.42" autocomplete="off">
         </div>
         <div class="shrink">
-          <button id="test-btn-manual" class="primary">Test connection</button>
+          <button id="test-btn-manual" class="primary">Connect</button>
         </div>
       </div>
       <div class="muted" style="margin-top:8px;">
@@ -866,7 +866,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       deviceSel.disabled = false;
       setStatus(testStat,
         `found ${j.devices.length} device${j.devices.length === 1 ? "" : "s"}. ` +
-        `click Test connection to verify.`, "ok");
+        `click Connect to verify.`, "ok");
     } catch (e) {
       deviceSel.innerHTML = '<option value="">(discovery failed)</option>';
       setStatus(testStat, "discovery failed: " + e.message, "err");
@@ -878,7 +878,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   refreshBtn.addEventListener("click", discoverDevices);
 
-  // ── Test connection ──────────────────────────────────────────────
+  // ── Connect ──────────────────────────────────────────────
   async function testConnection() {
     const ip = getCurrentIp();
     if (!ip) {

@@ -55,6 +55,8 @@ try:
         AUTOEQ_RAW_BASE,
         AUTOEQ_RESULTS_README,
         VALID_SOURCES,
+        PeqBand,
+        Profile,
         WiimClient,
         parse_profile,
         requests,  # re-use the same requests import (and its urllib3 warning suppression)
@@ -298,22 +300,97 @@ def api_headphones():
     return jsonify({"ok": True, "count": len(items), "headphones": items})
 
 
+@app.get("/api/preview-peq")
+def api_preview_peq():
+    """Fetch and parse an AutoEQ profile without writing to the device.
+    Returns the bands with both raw and preamp-adjusted gains for the editor."""
+    folder_path = (request.args.get("path") or "").strip()
+    preamp_mode = (request.args.get("preamp_mode") or "subtract").strip()
+    if not folder_path:
+        return jsonify({"ok": False, "error": "missing 'path' parameter"}), 400
+    if preamp_mode not in {"subtract", "warn", "ignore"}:
+        return jsonify({"ok": False, "error": "invalid preamp_mode"}), 400
+    try:
+        text, url = fetch_profile_from_path(folder_path)
+        profile = parse_profile(text)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"couldn't load profile: {e}"}), 502
+    adjust = profile.preamp if preamp_mode == "subtract" else 0.0
+    return jsonify({
+        "ok": True,
+        "source_url": url,
+        "preamp": profile.preamp,
+        "preamp_applied": adjust,
+        "bands": [
+            {
+                "type": b.type,
+                "fc": round(b.fc, 2),
+                "gain": round(b.gain, 2),
+                "gain_device": round(b.gain + adjust, 2),
+                "q": round(b.q, 3),
+            }
+            for b in profile.bands
+        ],
+    })
+
+
 @app.post("/api/apply-peq")
 def api_apply_peq():
-    """Fetch a profile from AutoEQ by path, parse it, push to the WiiM."""
+    """Push a PEQ profile to the WiiM.
+
+    Accepts two forms:
+      • {"path": "...", "preamp_mode": "...", ...}  — fetch from AutoEQ then push
+      • {"bands": [...], "name": "...", ...}         — push pre-parsed/edited bands directly
+    """
     data = request.get_json(silent=True) or {}
     ip = (data.get("ip") or "").strip()
-    folder_path = (data.get("path") or "").strip()
     source = (data.get("source") or "wifi").strip()
-    preamp_mode = data.get("preamp_mode") or "subtract"
     use_http = bool(data.get("http"))
 
     if not ip:
         return jsonify({"ok": False, "error": "missing WiiM IP"}), 400
-    if not folder_path:
-        return jsonify({"ok": False, "error": "missing headphone path"}), 400
     if source not in VALID_SOURCES:
         return jsonify({"ok": False, "error": f"invalid source '{source}'"}), 400
+
+    # ── Direct bands mode (from the editor) ──────────────────────────
+    if data.get("bands") is not None:
+        try:
+            bands = [
+                PeqBand(type=b["type"], fc=float(b["fc"]),
+                        gain=float(b["gain"]), q=float(b["q"]))
+                for b in data["bands"]
+            ]
+        except (KeyError, TypeError, ValueError) as e:
+            return jsonify({"ok": False, "error": f"invalid bands: {e}"}), 400
+        preset_name = (data.get("name") or "custom").strip()
+        client = WiimClient(ip, use_http=use_http, dry_run=False)
+        try:
+            client.peq_off(source)
+            for i, band in enumerate(bands):
+                client.set_band(source, i, band)
+            client.clear_unused_bands(source, used=len(bands))
+            client.peq_save_name(source, preset_name)
+            client.peq_on(source)
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            return jsonify({
+                "ok": False,
+                "error": f"device call failed: {e.__class__.__name__}: {e}",
+            }), 502
+        return jsonify({
+            "ok": True,
+            "source_url": None,
+            "preamp": 0.0,
+            "preamp_applied": 0.0,
+            "bands": [{"type": b.type, "fc": b.fc, "gain": b.gain, "q": b.q}
+                      for b in bands],
+        })
+
+    # ── Path-based mode (fetch from AutoEQ) ──────────────────────────
+    folder_path = (data.get("path") or "").strip()
+    preamp_mode = data.get("preamp_mode") or "subtract"
+    if not folder_path:
+        return jsonify({"ok": False, "error": "missing headphone path"}), 400
     if preamp_mode not in {"subtract", "warn", "ignore"}:
         return jsonify({"ok": False, "error": "invalid preamp_mode"}), 400
 
@@ -477,6 +554,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
     .hp-item .sub-path { color: var(--muted); font-size: 11px; display: block; }
     .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     @media (max-width: 600px) { .two-col { grid-template-columns: 1fr; } }
+    .eq-editor-table td { padding: 3px 6px; vertical-align: middle; }
+    .eq-editor-table td:first-child { width: 28px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
+    .eq-editor-table input[type="number"], .eq-editor-table select {
+      background: var(--panel-2); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 3px 6px; font-size: 13px; font-family: inherit;
+      width: 100%; min-width: 0; box-sizing: border-box;
+    }
+    .eq-editor-table input[type="number"]:focus, .eq-editor-table select:focus {
+      outline: none; border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(106,169,255,0.12);
+    }
+    .eq-editor-table .col-type { width: 74px; }
+    .eq-editor-table .col-freq { width: 100px; }
+    .eq-editor-table .col-gain { width: 90px; }
+    .eq-editor-table .col-q   { width: 80px; }
   </style>
 </head>
 <body>
@@ -579,7 +672,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div class="card">
     <div class="row">
       <div class="shrink">
-        <button id="apply-btn" class="primary" disabled>Apply PEQ</button>
+        <button id="apply-btn" class="primary" disabled>Load Profile</button>
       </div>
       <div class="shrink">
         <button id="off-btn" class="danger" disabled>Turn PEQ off</button>
@@ -587,7 +680,23 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div></div>
     </div>
     <div id="apply-status" class="status"></div>
-    <div id="band-preview"></div>
+  </div>
+
+  <!-- ── EQ band editor (hidden until profile loaded) ───────────── -->
+  <div class="card" id="eq-editor" style="display:none;">
+    <h2>4. EQ bands <span class="badge" style="text-transform:none;font-size:11px;">editable</span></h2>
+    <div id="preamp-info" class="muted" style="margin-bottom:12px;font-size:13px;"></div>
+    <div id="band-edit-container"></div>
+    <div class="row" style="margin-top:14px;">
+      <div class="shrink">
+        <button id="confirm-apply-btn" class="primary">Apply to WiiM</button>
+      </div>
+      <div class="shrink">
+        <button id="reset-bands-btn">Reset to original</button>
+      </div>
+      <div></div>
+    </div>
+    <div id="confirm-status" class="status"></div>
   </div>
 
   <div class="caveats">
@@ -619,16 +728,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const hpSel     = $("hp-selected");
   const sourceSel = $("source");
   const preampSel = $("preamp-mode");
-  const applyBtn  = $("apply-btn");
-  const offBtn    = $("off-btn");
-  const applyStat = $("apply-status");
-  const bandPrev  = $("band-preview");
+  const applyBtn        = $("apply-btn");
+  const offBtn          = $("off-btn");
+  const applyStat       = $("apply-status");
+  const eqEditor        = $("eq-editor");
+  const preampInfo      = $("preamp-info");
+  const bandEditCont    = $("band-edit-container");
+  const confirmApplyBtn = $("confirm-apply-btn");
+  const resetBandsBtn   = $("reset-bands-btn");
+  const confirmStat     = $("confirm-status");
 
   let headphones = [];
   let selectedHp = null;      // { name, path }
   let connectionOk = false;
   let filterActive = 0;       // index of currently-highlighted dropdown item
   let mode = "discovered";    // "discovered" | "manual"
+  let loadedProfile = null;   // response from /api/preview-peq
 
   function setStatus(el, text, cls) {
     el.textContent = text;
@@ -852,56 +967,48 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
   });
 
+  function hideEditor() {
+    eqEditor.style.display = "none";
+    loadedProfile = null;
+    setStatus(confirmStat, "", "");
+  }
+
   function selectHeadphone(hp) {
     selectedHp = hp;
     hpSearch.value = hp.name;
     hpList.classList.remove("open");
     hpSel.innerHTML = `source: <code>${escapeHtml(hp.path)}</code>`;
+    hideEditor();
     refreshApplyBtn();
   }
 
-  // ── Apply / Off ──────────────────────────────────────────────────
+  // Hide editor if the user changes preamp mode after loading
+  preampSel.addEventListener("change", hideEditor);
+
+  // ── Load profile (step 1 of 2) ───────────────────────────────────
   applyBtn.addEventListener("click", async () => {
     if (!selectedHp) return;
-    setStatus(applyStat, "fetching profile & writing to device…", "");
-    bandPrev.innerHTML = "";
-    applyBtn.disabled = true; offBtn.disabled = true;
+    setStatus(applyStat, "loading profile from AutoEQ…", "");
+    hideEditor();
+    applyBtn.disabled = true;
     try {
-      const r = await fetch("/api/apply-peq", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ip: getCurrentIp(),
-          path: selectedHp.path,
-          source: sourceSel.value,
-          preamp_mode: preampSel.value,
-          http: httpCb.checked,
-        }),
-      });
+      const url = `/api/preview-peq?path=${encodeURIComponent(selectedHp.path)}`
+                + `&preamp_mode=${encodeURIComponent(preampSel.value)}`;
+      const r = await fetch(url);
       const j = await r.json();
       if (!j.ok) {
-        setStatus(applyStat, "✗ " + (j.error || "failed"), "err");
+        setStatus(applyStat, "✗ " + (j.error || "failed to load"), "err");
         return;
       }
+      loadedProfile = j;
+      const adjNote = j.preamp_applied !== 0
+        ? ` (preamp ${j.preamp.toFixed(2)} dB already applied)`
+        : "";
       setStatus(applyStat,
-        `✓ applied — preamp ${j.preamp.toFixed(2)} dB, ${j.bands.length} bands written. ` +
-        `remember: exit & re-enter the EQ screen in the WiiM app to see them.`, "ok");
-      // Band preview table
-      let html = `<details open><summary>profile details</summary>` +
-                 `<table class="band-table"><thead><tr>` +
-                 `<th>#</th><th>type</th><th>freq (Hz)</th><th>gain (dB)</th><th>Q</th></tr></thead><tbody>`;
-      j.bands.forEach((b, i) => {
-        const applied = (b.gain + j.preamp_applied).toFixed(2);
-        html += `<tr><td>${i}</td><td>${b.type}</td>` +
-                `<td>${b.fc.toFixed(1)}</td>` +
-                `<td>${b.gain.toFixed(2)}` +
-                (j.preamp_applied !== 0
-                  ? ` <span class="badge">applied: ${applied}</span>`
-                  : "") +
-                `</td><td>${b.q.toFixed(3)}</td></tr>`;
-      });
-      html += `</tbody></table></details>`;
-      bandPrev.innerHTML = html;
+        `loaded ${j.bands.length} bands${adjNote} — review and edit below, then apply.`, "ok");
+      renderBandEditor(j);
+      eqEditor.style.display = "";
+      eqEditor.scrollIntoView({ behavior: "smooth", block: "nearest" });
     } catch (e) {
       setStatus(applyStat, "✗ request failed: " + e.message, "err");
     } finally {
@@ -909,6 +1016,92 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
   });
 
+  // ── EQ band editor ───────────────────────────────────────────────
+  function renderBandEditor(profile) {
+    if (profile.preamp_applied !== 0) {
+      preampInfo.textContent =
+        `AutoEQ preamp: ${profile.preamp.toFixed(2)} dB — already subtracted from the gains below.`;
+    } else if (profile.preamp !== 0) {
+      preampInfo.textContent =
+        `AutoEQ preamp: ${profile.preamp.toFixed(2)} dB — not applied (preamp mode setting).`;
+    } else {
+      preampInfo.textContent = "";
+    }
+
+    let html = `<table class="band-table eq-editor-table">
+      <thead><tr>
+        <th>#</th>
+        <th class="col-type">Type</th>
+        <th class="col-freq">Freq (Hz)</th>
+        <th class="col-gain">Gain (dB)</th>
+        <th class="col-q">Q</th>
+      </tr></thead><tbody>`;
+    profile.bands.forEach((b, i) => {
+      const gain = b.gain_device !== undefined ? b.gain_device : b.gain;
+      html += `<tr data-band="${i}">
+        <td>${i}</td>
+        <td><select class="band-type">
+          <option value="PK"${b.type === "PK" ? " selected" : ""}>PK</option>
+          <option value="LSC"${b.type === "LSC" ? " selected" : ""}>LSC</option>
+          <option value="HSC"${b.type === "HSC" ? " selected" : ""}>HSC</option>
+        </select></td>
+        <td><input type="number" class="band-freq" value="${b.fc}" step="1" min="20" max="20000"></td>
+        <td><input type="number" class="band-gain" value="${gain}" step="0.1" min="-30" max="30"></td>
+        <td><input type="number" class="band-q" value="${b.q}" step="0.01" min="0.1" max="10"></td>
+      </tr>`;
+    });
+    html += `</tbody></table>`;
+    bandEditCont.innerHTML = html;
+  }
+
+  function getBandsFromTable() {
+    return Array.from(bandEditCont.querySelectorAll("tr[data-band]")).map(row => ({
+      type: row.querySelector(".band-type").value,
+      fc:   parseFloat(row.querySelector(".band-freq").value),
+      gain: parseFloat(row.querySelector(".band-gain").value),
+      q:    parseFloat(row.querySelector(".band-q").value),
+    }));
+  }
+
+  // ── Confirm apply (step 2 of 2) ──────────────────────────────────
+  confirmApplyBtn.addEventListener("click", async () => {
+    const bands = getBandsFromTable();
+    setStatus(confirmStat, "writing to device…", "");
+    confirmApplyBtn.disabled = true;
+    resetBandsBtn.disabled = true;
+    try {
+      const r = await fetch("/api/apply-peq", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ip: getCurrentIp(),
+          source: sourceSel.value,
+          http: httpCb.checked,
+          bands,
+          name: selectedHp ? selectedHp.name : "custom",
+        }),
+      });
+      const j = await r.json();
+      if (!j.ok) {
+        setStatus(confirmStat, "✗ " + (j.error || "failed"), "err");
+      } else {
+        setStatus(confirmStat,
+          `✓ ${j.bands.length} bands written. exit & re-enter the EQ screen in WiiM Home to see them.`, "ok");
+      }
+    } catch (e) {
+      setStatus(confirmStat, "✗ request failed: " + e.message, "err");
+    } finally {
+      confirmApplyBtn.disabled = false;
+      resetBandsBtn.disabled = false;
+    }
+  });
+
+  resetBandsBtn.addEventListener("click", () => {
+    if (loadedProfile) renderBandEditor(loadedProfile);
+    setStatus(confirmStat, "", "");
+  });
+
+  // ── Turn off ─────────────────────────────────────────────────────
   offBtn.addEventListener("click", async () => {
     setStatus(applyStat, "turning PEQ off on " + sourceSel.value + "…", "");
     applyBtn.disabled = true; offBtn.disabled = true;

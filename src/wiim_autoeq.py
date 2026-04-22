@@ -82,10 +82,10 @@ N_BANDS = 10
 # AutoEQ uses PK / LS / HS. WiiM's LV2 plugin uses integer type codes
 # (verified in devicePEQ's wiimNetworkHandler.js).
 #   0 = Peaking   (PK)
-#   1 = Low shelf (LS)
-#   2 = High shelf (HS)
+#   1 = Low shelf (LSC)
+#   2 = High shelf (HSC)
 # Newer firmwares also support HP/LP but AutoEQ never emits those.
-FILTER_TYPE_CODE = {"PK": 0, "LS": 1, "HS": 2}
+FILTER_TYPE_CODE = {"PK": 0, "LSC": 1, "HSC": 2}
 
 # WiiM source names (per their per-source EQ docs).
 VALID_SOURCES = {"wifi", "line-in", "bluetooth", "optical", "coaxial",
@@ -98,7 +98,7 @@ VALID_SOURCES = {"wifi", "line-in", "bluetooth", "optical", "coaxial",
 
 @dataclass
 class PeqBand:
-    type: str   # "PK" | "LS" | "HS"
+    type: str   # "PK" | "LSC" | "HSC"
     fc: float   # Hz
     gain: float # dB
     q: float

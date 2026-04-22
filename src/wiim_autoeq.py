@@ -111,7 +111,7 @@ class Profile:
 
 
 FILTER_RE = re.compile(
-    r"^Filter\s+\d+\s*:\s*ON\s+(PK|LS|HS)\s+Fc\s+([\d.]+)\s+Hz\s+"
+    r"^Filter\s+\d+\s*:\s*ON\s+(PK|LSC|HSC)\s+Fc\s+([\d.]+)\s+Hz\s+"
     r"Gain\s+(-?[\d.]+)\s+dB\s+Q\s+([\d.]+)\s*$",
     re.IGNORECASE,
 )

@@ -1,7 +1,7 @@
 services:
   wiim-autoeq:
     build: .
-    ports:
-      - "5173:5173"
-    # network_mode: host  # uncomment on Linux for mDNS device auto-discovery;
+    # ports:
+    #   - "5173:5173"
+    network_mode: host  # uncomment on Linux for mDNS device auto-discovery;
     #                     # not needed on Mac/Windows (use manual IP entry instead)

@@ -80,6 +80,7 @@ BAND_LETTERS = "abcdefghij"
 N_BANDS = 10
 
 # AutoEQ uses PK / LS / HS. WiiM's LV2 plugin uses integer type codes
+# sent as the `{letter}_mode` param in EQSetLV2SourceBand payloads
 # (verified in devicePEQ's wiimNetworkHandler.js).
 #   0 = Peaking   (PK)
 #   1 = Low shelf (LSC)
@@ -262,15 +263,26 @@ class WiimClient:
         letter = BAND_LETTERS[index]
         adjusted_gain = band.gain + preamp_adjust  # preamp is negative → cuts gain
         payload = {
-            "source_name":       source,
-            "pluginURI":         PEQ_PLUGIN_URI,
-            f"{letter}_freq":    round(band.fc, 2),
-            f"{letter}_q":       round(band.q, 3),
-            f"{letter}_gain":    round(adjusted_gain, 2),
-            f"{letter}_type":    FILTER_TYPE_CODE[band.type],
+            "pluginURI":   PEQ_PLUGIN_URI,
+            "source_name": source,
+            "EQBand": [
+                {"param_name": f"{letter}_mode", "value": FILTER_TYPE_CODE[band.type]},
+                {"param_name": f"{letter}_freq", "value": round(band.fc, 2)},
+                {"param_name": f"{letter}_q",    "value": round(band.q, 3)},
+                {"param_name": f"{letter}_gain", "value": round(adjusted_gain, 2)},
+            ],
+            "EQStat":      "On",
+            "channelMode": "Stereo",
         }
         blob = json.dumps(payload, separators=(",", ":"))
         self._call(f"EQSetLV2SourceBand:{blob}")
+
+    def peq_save_name(self, source: str, name: str) -> None:
+        payload = json.dumps(
+            {"pluginURI": PEQ_PLUGIN_URI, "source_name": source, "Name": name},
+            separators=(",", ":"),
+        )
+        self._call(f"EQSourceSave:{payload}")
 
     def clear_unused_bands(self, source: str, used: int) -> None:
         """Zero out bands the profile didn't use, so stale settings don't bleed
@@ -357,13 +369,15 @@ def main(argv: Optional[list[str]] = None) -> int:
               f"WiiM has no preamp field — lower the device's volume limit "
               f"by that amount manually, or rerun with --preamp-mode=subtract.")
 
-    # Push to device: off → write bands → on.
+    preset_name = args.headphone if args.headphone else args.file
+
+    # Push to device: write bands → save name → EQChangeSourceFX to activate.
     print(f"\nwriting to WiiM at {args.ip} (source='{args.source}') …")
-    client.peq_off(args.source)
     for i, band in enumerate(profile.bands):
         client.set_band(args.source, i, band, preamp_adjust=adjust)
     # Flatten bands the profile didn't use.
     client.clear_unused_bands(args.source, used=len(profile.bands))
+    client.peq_save_name(args.source, preset_name)
     client.peq_on(args.source)
 
     print("\ndone. open the WiiM Home app and navigate Device → EQ → "

@@ -1060,12 +1060,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     hpSearch.value = hp.name;
     hpList.classList.remove("open");
     hpSel.innerHTML = `source: <code>${escapeHtml(hp.path)}</code>`;
-    hideEditor();
     refreshApplyBtn();
   }
-
-  // Hide editor if the user changes preamp mode after loading
-  preampSel.addEventListener("change", hideEditor);
 
   loadDevEqBtn.addEventListener("click", () => loadDeviceEq());
 

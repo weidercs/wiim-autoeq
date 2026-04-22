@@ -293,6 +293,31 @@ def api_test_connection():
     })
 
 
+@app.get("/api/get-current-eq")
+def api_get_current_eq():
+    """Read the active EQ bands currently loaded on the device for a given source."""
+    ip = (request.args.get("ip") or "").strip()
+    source = (request.args.get("source") or "wifi").strip()
+    use_http = request.args.get("http") == "1"
+    if not ip:
+        return jsonify({"ok": False, "error": "missing 'ip' parameter"}), 400
+    if source not in VALID_SOURCES:
+        return jsonify({"ok": False, "error": f"invalid source '{source}'"}), 400
+    client = WiimClient(ip, use_http=use_http)
+    try:
+        bands = client.get_current_eq(source)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 502
+    if bands is None:
+        return jsonify({"ok": False, "error": "device returned no EQ data"}), 200
+    return jsonify({
+        "ok": True,
+        "source": source,
+        "bands": [{"type": b.type, "fc": b.fc, "gain": b.gain, "q": b.q}
+                  for b in bands],
+    })
+
+
 @app.get("/api/headphones")
 def api_headphones():
     """Return the full AutoEQ headphone list (cached after first call)."""
@@ -859,6 +884,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         setStatus(testStat,
           `✓ connected to "${j.device_name}" — firmware ${j.firmware}` +
           (j.project ? ` (${j.project})` : ""), "ok");
+        loadDeviceEq();  // best-effort; silently ignored if device doesn't support it
       } else {
         connectionOk = false;
         setStatus(testStat, "✗ " + (j.error || "unknown error"), "err");
@@ -874,6 +900,34 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   testBtn.addEventListener("click", testConnection);
   testBtnManual.addEventListener("click", testConnection);
+
+  // ── Load current EQ from device ──────────────────────────────────
+  async function loadDeviceEq() {
+    const ip = getCurrentIp();
+    if (!ip) return;
+    const url = `/api/get-current-eq?ip=${encodeURIComponent(ip)}`
+              + `&source=${encodeURIComponent(sourceSel.value)}`
+              + (httpCb.checked ? "&http=1" : "");
+    let j;
+    try {
+      const r = await fetch(url);
+      j = await r.json();
+    } catch (_) {
+      return;  // network error — silently skip
+    }
+    if (!j.ok || !j.bands || !j.bands.length) return;
+    // Treat all gains as already "device-ready" (no preamp metadata available)
+    const profile = {
+      preamp: 0,
+      preamp_applied: 0,
+      bands: j.bands.map(b => ({ ...b, gain_device: b.gain })),
+      _fromDevice: true,
+    };
+    loadedProfile = profile;
+    renderBandEditor(profile);
+    eqEditor.style.display = "";
+    eqEditor.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 
 
   // ── Headphone search ─────────────────────────────────────────────
@@ -1021,7 +1075,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   // ── EQ band editor ───────────────────────────────────────────────
   function renderBandEditor(profile) {
-    if (profile.preamp_applied !== 0) {
+    if (profile._fromDevice) {
+      preampInfo.textContent =
+        `Loaded from device (${sourceSel.value} source) — showing what's currently active.`;
+    } else if (profile.preamp_applied !== 0) {
       preampInfo.textContent =
         `AutoEQ preamp: ${profile.preamp.toFixed(2)} dB — already subtracted from the gains below.`;
     } else if (profile.preamp !== 0) {

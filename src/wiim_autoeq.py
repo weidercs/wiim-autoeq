@@ -295,6 +295,37 @@ class WiimClient:
         )
         self._call(f"EQSourceSave:{payload}")
 
+    def get_current_eq(self, source: str) -> Optional[list[PeqBand]]:
+        """Read the current EQ bands from the device for the given source.
+        Returns a list of active (non-disabled) bands, or None if unavailable."""
+        payload = json.dumps({"source_name": source, "pluginURI": PEQ_PLUGIN_URI},
+                             separators=(",", ":"))
+        result = self._call(f"EQGetLV2SourceBandEx:{payload}")
+        if not result or "EQBand" not in result:
+            return None
+        # Response is a flat list of {param_name, value} entries, 4 per band:
+        # {letter}_mode, {letter}_freq, {letter}_q, {letter}_gain
+        # mode: -1=disabled, 0=LSC, 1=PK, 2=HSC
+        _TYPE = {0: "LSC", 1: "PK", 2: "HSC"}
+        bands: list[PeqBand] = []
+        items = result["EQBand"]
+        for i in range(0, len(items), 4):
+            chunk = items[i:i + 4]
+            if len(chunk) < 4:
+                break
+            params = {entry["param_name"].split("_", 1)[1]: entry["value"]
+                      for entry in chunk}
+            mode = int(params.get("mode", -1))
+            if mode not in _TYPE:
+                continue  # -1 = disabled band, skip
+            bands.append(PeqBand(
+                type=_TYPE[mode],
+                fc=float(params.get("freq", 1000.0)),
+                gain=float(params.get("gain", 0.0)),
+                q=float(params.get("q", 1.0)),
+            ))
+        return bands
+
     def clear_unused_bands(self, source: str, used: int) -> None:
         """Zero out bands the profile didn't use, so stale settings don't bleed
         through from a previous profile."""

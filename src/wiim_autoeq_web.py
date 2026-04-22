@@ -25,6 +25,7 @@ same directory).
 from __future__ import annotations
 
 import argparse
+import logging
 import re
 import sys
 import traceback
@@ -957,7 +958,15 @@ def main() -> int:
                     help="port to serve on (default: 5173).")
     ap.add_argument("--debug", action="store_true",
                     help="enable Flask debug mode.")
+    ap.add_argument("--log-level", default="WARNING",
+                    choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+                    help="Logging verbosity (default: WARNING). Use DEBUG to "
+                         "see every HTTP request and response sent to the WiiM.")
     args = ap.parse_args()
+
+    logging.basicConfig(level=getattr(logging, args.log_level),
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                        datefmt="%H:%M:%S")
 
     print(f"\n  WiiM × AutoEQ web UI")
     print(f"  ────────────────────")

@@ -33,11 +33,11 @@ FAKE_README = """\
 
 FAKE_PEQ_TXT = """\
 Preamp: -6.2 dB
-Filter 1: ON LS Fc 105 Hz Gain 6.7 dB Q 0.7
+Filter 1: ON LSC Fc 105 Hz Gain 6.7 dB Q 0.7
 Filter 2: ON PK Fc 227 Hz Gain -3.1 dB Q 0.83
 Filter 3: ON PK Fc 830 Hz Gain -4.5 dB Q 1.16
 Filter 4: ON PK Fc 2993 Hz Gain 6.4 dB Q 1.31
-Filter 5: ON HS Fc 10000 Hz Gain -2.0 dB Q 0.7
+Filter 5: ON HSC Fc 10000 Hz Gain -2.0 dB Q 0.7
 """
 
 # ── fake WiiM HTTP device ─────────────────────────────────────────────
@@ -222,12 +222,13 @@ def main() -> int:
               cmds[0].startswith("EQSourceOff:"))
         check("last is EQChangeSourceFX",
               cmds[-1].startswith("EQChangeSourceFX:"))
-        # Verify preamp subtraction
+        # Verify preamp subtraction: band 0 (LSC, 105 Hz, 6.7 dB) - 6.2 preamp = 0.5
         band0 = json.loads(next(c for c in cmds if c.startswith("EQSetLV2SourceBand:"))
                            .split(":", 1)[1])
+        eq_params = {item["param_name"]: item["value"] for item in band0.get("EQBand", [])}
         check("band 0 gain = 0.5 after preamp",
-              abs(band0.get("a_gain", 0) - 0.5) < 0.01,
-              f"a_gain={band0.get('a_gain')}")
+              abs(eq_params.get("a_gain", 0) - 0.5) < 0.01,
+              f"a_gain={eq_params.get('a_gain')}")
 
         print("\n── /api/peq-off ─────────────────────────────────────")
         wiim_log.clear()

@@ -47,6 +47,7 @@ import argparse
 import json
 import re
 import sys
+import logging
 import urllib.parse
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -61,6 +62,8 @@ except ImportError:
 # Silence the self-signed cert warning — WiiM devices use self-signed certs.
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -82,11 +85,11 @@ N_BANDS = 10
 # AutoEQ uses PK / LS / HS. WiiM's LV2 plugin uses integer type codes
 # sent as the `{letter}_mode` param in EQSetLV2SourceBand payloads
 # (verified in devicePEQ's wiimNetworkHandler.js).
-#   0 = Peaking   (PK)
-#   1 = Low shelf (LSC)
+#   1 = Peaking   (PK)
+#   0 = Low shelf (LSC)
 #   2 = High shelf (HSC)
 # Newer firmwares also support HP/LP but AutoEQ never emits those.
-FILTER_TYPE_CODE = {"PK": 0, "LSC": 1, "HSC": 2}
+FILTER_TYPE_CODE = {"PK": 1, "LSC": 0, "HSC": 2}
 
 # WiiM source names (per their per-source EQ docs).
 VALID_SOURCES = {"wifi", "line-in", "bluetooth", "optical", "coaxial",
@@ -235,8 +238,14 @@ class WiimClient:
         if self.dry_run:
             print(f"  [dry-run] GET {url}")
             return None
-        r = self.session.get(url, timeout=10)
-        r.raise_for_status()
+        logger.debug("→ GET %s", url)
+        try:
+            r = self.session.get(url, timeout=10)
+            r.raise_for_status()
+        except requests.exceptions.RequestException as exc:
+            logger.error("← %s: %s", type(exc).__name__, exc)
+            raise
+        logger.debug("← %d %s", r.status_code, r.text[:500])
         # Some endpoints return "OK"; others return JSON. Try JSON, fall back.
         try:
             return r.json()
@@ -328,8 +337,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                          "cert hassles; works on most WiiM firmwares.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Print every URL instead of calling the device.")
+    ap.add_argument("--log-level", default="WARNING",
+                    choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+                    help="Logging verbosity (default: WARNING). Use DEBUG to "
+                         "see every HTTP request and response sent to the WiiM.")
 
     args = ap.parse_args(argv)
+    logging.basicConfig(level=getattr(logging, args.log_level),
+                        format="%(levelname)s %(name)s: %(message)s")
 
     client = WiimClient(args.ip, use_http=args.http, dry_run=args.dry_run)
 

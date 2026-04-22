@@ -691,6 +691,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
         </select>
       </div>
     </div>
+    <div class="row" style="margin-top:12px;align-items:center;">
+      <div class="shrink">
+        <button id="load-device-eq-btn" disabled>Load current EQ from device</button>
+      </div>
+      <div class="muted" style="font-size:12px;">
+        Reads what's active on the WiiM for the selected source.
+      </div>
+    </div>
     <div class="muted" style="margin-top: 8px;">
       WiiM has no preamp slider. AutoEQ profiles expect one — subtracting it keeps levels safe.
     </div>
@@ -776,6 +784,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const resetBandsBtn   = $("reset-bands-btn");
   const confirmStat     = $("confirm-status");
   const preampInput     = $("preamp-input");
+  const loadDevEqBtn    = $("load-device-eq-btn");
 
   let headphones = [];
   let selectedHp = null;      // { name, path }
@@ -800,8 +809,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   function refreshApplyBtn() {
     const ip = getCurrentIp();
     const ready = connectionOk && selectedHp && ip;
-    applyBtn.disabled = !ready;
-    offBtn.disabled   = !(connectionOk && ip);
+    applyBtn.disabled    = !ready;
+    offBtn.disabled      = !(connectionOk && ip);
+    loadDevEqBtn.disabled = !(connectionOk && ip);
   }
 
   function invalidateConnection() {
@@ -1056,6 +1066,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   // Hide editor if the user changes preamp mode after loading
   preampSel.addEventListener("change", hideEditor);
+
+  loadDevEqBtn.addEventListener("click", () => loadDeviceEq());
 
   // ── Load profile (step 1 of 2) ───────────────────────────────────
   applyBtn.addEventListener("click", async () => {

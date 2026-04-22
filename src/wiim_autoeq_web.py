@@ -723,7 +723,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <h2>4. EQ bands <span class="badge" style="text-transform:none;font-size:11px;">editable</span></h2>
     <div id="preamp-info" class="muted" style="margin-bottom:10px;font-size:13px;"></div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-      <span style="font-size:13px;color:var(--muted);">Preamp offset</span>
+      <span style="font-size:13px;color:var(--muted);">Additional preamp offset</span>
       <input type="number" id="preamp-input" value="0" step="0.5" min="-30" max="30"
              style="width:72px;padding:3px 6px;font-size:13px;font-family:inherit;
                     background:var(--panel-2);color:var(--text);

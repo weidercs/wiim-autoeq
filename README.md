@@ -27,7 +27,7 @@ There are two interfaces to the same underlying logic:
 
 Requires Python 3.9 or later.
 
-```
+```sh
 git clone https://github.com/weidercs/wiim-autoeq.git
 cd wiim-autoeq
 pip install -r requirements.txt
@@ -35,15 +35,33 @@ pip install -r requirements.txt
 
 ## Usage — web UI (recommended)
 
-```
+```sh
 python3 src/wiim_autoeq_web.py
 ```
 
 Then open <http://127.0.0.1:5173/> in your browser.
 
 The page auto-discovers WiiM devices on your LAN via mDNS/Bonjour. Pick
-yours from the dropdown, click **Test connection**, search for your
-headphone in the AutoEQ list, click **Apply PEQ**. Done.
+yours from the dropdown, click **Connect**, search for your headphone in the
+AutoEQ list, then click **Load Profile**.
+
+This opens the EQ band editor, which shows:
+
+- an interactive **frequency-response graph** rendered from the actual biquad
+  coefficients, updated live as you edit
+- a **draggable preamp slider** on the right edge of the graph, plus a numeric
+  **Additional preamp offset** field for fine control
+- an editable **band table** (type, frequency, gain, Q) — tweak any values
+  before writing to the device
+
+When you're happy with the bands, click **Apply to WiiM** to push them to the
+device.
+
+Other controls in the Options section:
+
+- **Load current EQ from device** — reads whatever bands are currently active
+  on the device and loads them into the editor
+- **Turn PEQ off** — disables the parametric EQ on the selected source
 
 If mDNS discovery can't see your device — common on segmented networks
 like separate VLANs — click **Enter IP manually** and type the IP from
@@ -53,19 +71,19 @@ the WiiM Home app (Device Settings → Network Status).
 
 Apply a profile by headphone name (fuzzy-matched against the AutoEQ index):
 
-```
+```sh
 python3 src/wiim_autoeq.py --ip 192.168.1.42 --headphone "Sennheiser HD 600"
 ```
 
 Apply a local ParametricEQ.txt file:
 
-```
+```sh
 python3 src/wiim_autoeq.py --ip 192.168.1.42 --file my_profile.txt
 ```
 
 Turn the PEQ off:
 
-```
+```sh
 python3 src/wiim_autoeq.py --ip 192.168.1.42 --off
 ```
 
@@ -73,10 +91,16 @@ Other useful flags:
 
 - `--source wifi|line-in|bluetooth|optical|coaxial|hdmi|phono|usb` — which
   input source to write the EQ to (default: `wifi`)
+- `--measurement <source>` — AutoEQ measurement source to prefer (default:
+  `oratory1990`)
+- `--target <curve>` — AutoEQ target curve to prefer (default:
+  `harman_over-ear_2018`)
 - `--preamp-mode subtract|warn|ignore` — how to handle the profile's preamp
   value (default: `subtract`, since WiiM has no preamp slider)
 - `--http` — use plain HTTP instead of HTTPS (try this if you get SSL errors)
 - `--dry-run` — show what would be sent without actually calling the device
+- `--log-level DEBUG|INFO|WARNING|ERROR` — logging verbosity (default:
+  `WARNING`; use `DEBUG` to see every HTTP request and response)
 
 ## How it works
 

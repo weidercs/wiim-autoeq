@@ -198,6 +198,27 @@ applied and audible immediately.
 computer are on different VLANs or subnets without an mDNS repeater,
 auto-discovery won't find the device. Use the manual-IP fallback.
 
+## Security
+
+A security review of the codebase found no high-confidence exploitable
+vulnerabilities. Key points:
+
+**Network exposure.** The web UI binds to `127.0.0.1` by default, so only
+processes on your local machine can reach it. If you expose it to the network
+(via `--host 0.0.0.0` or Docker with `network_mode: host`), treat it like any
+other unauthenicated local-network service — run it only on a trusted network.
+
+**Output handling.** All status messages in the browser UI use `textContent`
+(not `innerHTML`), which prevents HTML injection. Every `innerHTML` assignment
+that includes external data (headphone names and paths fetched from AutoEQ)
+passes through a correct `escapeHtml()` function.
+
+**TLS.** WiiM devices use self-signed certificates. This tool disables TLS
+verification when talking to the device — this is intentional and unavoidable
+given WiiM's firmware, but it means traffic between the Python server and the
+WiiM is not authenticated at the transport layer. Use `--http` if you prefer
+plain HTTP on the same trusted LAN segment.
+
 ## Credits
 
 - [jaakkopasanen/AutoEq](https://github.com/jaakkopasanen/AutoEq) — the

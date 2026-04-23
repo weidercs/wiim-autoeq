@@ -140,7 +140,19 @@ def main() -> int:
     with patch.object(wiim_autoeq.requests, "get", patch_target):
         t2 = threading.Thread(target=run_web_app, args=(web_port,), daemon=True)
         t2.start()
-        time.sleep(1.5)
+
+        # Poll until the web app accepts connections — older Python versions have
+        # slower import startup so a fixed sleep isn't reliable.
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            try:
+                requests.get(f"http://127.0.0.1:{web_port}/", timeout=1)
+                break
+            except Exception:
+                time.sleep(0.2)
+        else:
+            print("ERROR: web app did not start within 15 seconds")
+            return 1
 
         base = f"http://127.0.0.1:{web_port}"
         failures = 0

@@ -236,7 +236,8 @@ class WiimClient:
 
     def _call(self, command: str) -> Optional[dict]:
         params = {"command": command}
-        url = f"{self.base}?{urllib.parse.urlencode(params, safe=':{}\",')}"
+        qs = urllib.parse.urlencode(params, safe=':{}",')
+        url = f"{self.base}?{qs}"
         if self.dry_run:
             print(f"  [dry-run] GET {url}")
             return None

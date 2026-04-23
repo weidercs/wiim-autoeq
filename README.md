@@ -102,6 +102,66 @@ Other useful flags:
 - `--log-level DEBUG|INFO|WARNING|ERROR` — logging verbosity (default:
   `WARNING`; use `DEBUG` to see every HTTP request and response)
 
+## Docker
+
+The web UI ships with a `Dockerfile` and a `docker-compose.yml`. The image
+runs the Flask server on port 5173 bound to all interfaces so it's reachable
+from the host.
+
+### Build and run with Docker
+
+```sh
+docker build -t wiim-autoeq .
+docker run --rm -p 5173:5173 wiim-autoeq
+```
+
+Then open <http://localhost:5173/>. mDNS auto-discovery won't work in this
+mode — use **Enter IP manually** to connect to your WiiM.
+
+### Docker Compose — Linux (mDNS auto-discovery works)
+
+The compose file uses `network_mode: host` so the container shares the host's
+network stack, which lets mDNS multicast reach the WiiM just as if the server
+were running natively.
+
+```sh
+docker compose up
+```
+
+Open <http://localhost:5173/>. Auto-discovery should find your WiiM.
+
+To run in the background:
+
+```sh
+docker compose up -d
+docker compose down   # to stop
+```
+
+### Docker Compose — Mac and Windows (manual IP)
+
+`network_mode: host` has no effect on Mac and Windows because Docker Desktop
+runs containers inside a Linux VM — the container's network is the VM's, not
+your Mac or Windows host's. mDNS multicast doesn't cross that boundary, so
+auto-discovery won't find your WiiM.
+
+Switch to port mapping instead by editing `docker-compose.yml`:
+
+```yaml
+services:
+  wiim-autoeq:
+    build: .
+    ports:
+      - "5173:5173"
+```
+
+Then:
+
+```sh
+docker compose up
+```
+
+Open <http://localhost:5173/> and use **Enter IP manually** to connect.
+
 ## How it works
 
 WiiM devices expose a self-signed HTTPS API at

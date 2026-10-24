@@ -165,6 +165,50 @@ docker compose up
 
 Open <http://localhost:5173/> and use **Enter IP manually** to connect.
 
+## Running as a service (Home Assistant + Claude)
+
+`src/wiim_eq_service.py` runs the web UI plus two machine-facing interfaces
+on one port (8000), all sharing the same core:
+
+| Path | For | What |
+|---|---|---|
+| `/` | people | the web UI, plus **favorites** (★) and an **Auto EQ per input** editor |
+| `/api/v1/…` | Home Assistant | JSON API (below) |
+| `/mcp` | Claude / MCP clients | streamable-HTTP MCP server |
+
+Devices are addressed by **name** ("Office WiiM Ultra", or a unique part like
+`office`) instead of IP. They come from `devices.json`, kept fresh by the
+discovery sidecar `src/wiim_discovery.py`. The sidecar runs on the host network
+so mDNS works, and it exposes no ports. See `docker-compose.yml`.
+
+Sources accept the names Home Assistant shows (`WiFi`, `Line In`, `USB`,
+`HDMI ARC`, …). All network streaming (AirPlay, Spotify, …) uses the WiiM's
+`wifi` EQ.
+
+### API
+
+| Method | Path | Body / query |
+|---|---|---|
+| GET | `/api/v1/devices` | |
+| GET | `/api/v1/favorites` | returns `favorites` and `names` (for an `input_select`) |
+| POST/DELETE | `/api/v1/favorites` | `{"name", "path"}` / `{"path"}` |
+| POST | `/api/v1/apply` | `{"device", "headphone", "source"?, "preamp_mode"?}` — `headphone` is a favorite name, AutoEQ path, or search |
+| POST | `/api/v1/off` | `{"device", "source"?}` |
+| GET | `/api/v1/eq` | `?device=&source=` |
+| GET/PUT | `/api/v1/auto` | `{"device", "source", "headphone"}` (`"off"`, or `null` to remove) |
+| POST | `/api/v1/source-changed` | `{"device", "source"}` — call from an HA automation; applies the matching auto rule |
+| GET | `/api/v1/health` | device count and discovery age |
+
+### MCP tools
+
+`list_wiim_devices`, `list_favorite_headphones`, `search_autoeq`, `get_eq`,
+`apply_headphone_eq`, `turn_eq_off`, `add_favorite_headphone`,
+`remove_favorite_headphone`, `get_auto_profiles`, `set_auto_profile`.
+
+**The service has no authentication of its own.** Put it behind a reverse
+proxy: for example, the UI behind SSO, `/api` reachable only from Home
+Assistant's IP, and `/mcp` behind a secret path plus an IP allowlist.
+
 ## How it works
 
 WiiM devices expose a self-signed HTTPS API at

@@ -82,7 +82,10 @@ def main() -> int:
         time.sleep(1)
         r, back = raw(), cl.get_current_eq(src) or []
         shelf = any(c.is_preamp_band(b) for b in back)
-        disabled = modes(r).count(c.DISABLED_MODE) == c.N_BANDS - len(plan.bands)
+        # Every slot after the written bands must read back disabled. The
+        # device may report more slots than we write (an Ultra on 5.2 reports
+        # 12: a–l), so check the tail rather than counting.
+        disabled = all(m == c.DISABLED_MODE for m in modes(r)[len(plan.bands):])
         print("TEST readback modes:", modes(r))
         print("SHELF PRESENT:", shelf, "| DISABLED ACCEPTED:", disabled)
         ok = shelf and disabled

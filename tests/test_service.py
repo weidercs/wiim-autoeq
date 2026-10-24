@@ -64,6 +64,8 @@ def verbs(calls):
 @pytest.mark.parametrize("given,want", [
     ("WiFi", "wifi"), ("AirPlay", "wifi"), ("Line In", "line-in"), ("USB", "usb"),
     ("HDMI ARC", "hdmi"), ("TOSLINK", "optical"), (None, "wifi"), ("line_in", "line-in"),
+    # Home Assistant LinkPlay source names
+    ("Network", "wifi"), ("Optical In", "optical"), ("TV", "hdmi"), ("Phono In", "phono"),
 ])
 def test_normalize_source(given, want):
     assert svc.normalize_source(given) == want

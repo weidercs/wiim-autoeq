@@ -65,8 +65,9 @@ _SOURCE_ALIASES = {
     "bluetooth": "bluetooth", "bt": "bluetooth",
     "optical": "optical", "toslink": "optical", "optical in": "optical",
     "coaxial": "coaxial", "coax": "coaxial",
-    "hdmi": "hdmi", "hdmi arc": "hdmi", "arc": "hdmi",
-    "phono": "phono",
+    "hdmi": "hdmi", "hdmi arc": "hdmi", "arc": "hdmi", "tv": "hdmi",
+    "coaxial in": "coaxial", "coax in": "coaxial",
+    "phono": "phono", "phono in": "phono",
     "usb": "usb", "usb dac": "usb", "usb audio": "usb", "usb in": "usb",
 }
 

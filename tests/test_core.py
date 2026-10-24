@@ -140,6 +140,15 @@ def test_apply_plan_sequence():
     assert json.loads(c.calls[-2].split(":", 1)[1])["Name"] == "HD 600"
 
 
+def test_unused_bands_are_disabled_not_flat():
+    c = Recorder()
+    c.apply_plan("wifi", w.plan_bands(bands(3)), "x")
+    band_writes = [json.loads(x.split(":", 1)[1]) for x in c.calls
+                   if x.startswith("EQSetLV2SourceBand:")]
+    modes = [b["EQBand"][0]["value"] for b in band_writes]
+    assert modes == [1, 1, 1] + [w.DISABLED_MODE] * 7
+
+
 def test_apply_plan_validates_before_any_device_call():
     c = Recorder()
     plan = w.BandPlan([w.PeqBand("PK", 1000, 0, 1), w.PeqBand("XX", 1, 0, 1)], 0, 0)

@@ -95,6 +95,8 @@ N_BANDS = 10
 #   0 = Low shelf (LSC)
 #   2 = High shelf (HSC)
 FILTER_TYPE_CODE = {"PK": 1, "LSC": 0, "HSC": 2}
+# Mode the device reports (and accepts) for an unused band.
+DISABLED_MODE = -1
 
 # WiiM source names (per their per-source EQ docs).
 VALID_SOURCES = {"wifi", "line-in", "bluetooth", "optical", "coaxial",
@@ -438,16 +440,20 @@ class WiimClient:
     def peq_on(self, source: str) -> None:
         self._call(f"EQChangeSourceFX:{self._source_payload(source)}")
 
-    def set_band(self, source: str, index: int, band: PeqBand) -> None:
-        """Writes one PEQ band. `index` is 0..9."""
+    def set_band(self, source: str, index: int, band: Optional[PeqBand]) -> None:
+        """Writes one PEQ band. `index` is 0..9. `band=None` disables the band
+        (mode -1), which is how the device itself represents an unused band."""
         if not 0 <= index < N_BANDS:
             raise ValueError(f"band index out of range: {index}")
         letter = BAND_LETTERS[index]
+        mode = DISABLED_MODE if band is None else FILTER_TYPE_CODE[band.type]
+        if band is None:
+            band = PeqBand(type="PK", fc=1000.0, gain=0.0, q=1.0)
         payload = {
             "pluginURI":   PEQ_PLUGIN_URI,
             "source_name": source,
             "EQBand": [
-                {"param_name": f"{letter}_mode", "value": FILTER_TYPE_CODE[band.type]},
+                {"param_name": f"{letter}_mode", "value": mode},
                 {"param_name": f"{letter}_freq", "value": round(band.fc, 2)},
                 {"param_name": f"{letter}_q",    "value": round(band.q, 3)},
                 {"param_name": f"{letter}_gain", "value": round(band.gain, 2)},
@@ -491,11 +497,11 @@ class WiimClient:
         return bands
 
     def clear_unused_bands(self, source: str, used: int) -> None:
-        """Zero out bands the profile didn't use, so stale settings don't bleed
-        through from a previous profile."""
-        flat = PeqBand(type="PK", fc=1000.0, gain=0.0, q=1.0)
+        """Disable bands the profile didn't use, so stale settings don't bleed
+        through from a previous profile, and a read-back shows exactly the
+        bands that were written."""
         for i in range(used, N_BANDS):
-            self.set_band(source, i, flat)
+            self.set_band(source, i, None)
 
     def apply_plan(self, source: str, plan: BandPlan, name: str) -> None:
         """The one write sequence everything uses:

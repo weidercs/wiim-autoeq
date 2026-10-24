@@ -26,10 +26,8 @@ from __future__ import annotations
 
 import argparse
 import logging
-import re
 import sys
 import traceback
-import urllib.parse
 from pathlib import Path
 
 try:
@@ -47,19 +45,28 @@ try:
 except ImportError:
     _ZEROCONF_AVAILABLE = False
 
-# Pull in everything we already built in the CLI — parser, WiiM client,
-# AutoEQ fetcher, constants.
+# Pull in everything we already built in the CLI — parser, planner, WiiM
+# client, AutoEQ fetcher, constants.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from wiim_autoeq import (  # noqa: E402
-        AUTOEQ_RAW_BASE,
-        AUTOEQ_RESULTS_README,
+        N_BANDS,
+        PREAMP_SHELF_FC,
+        PREAMP_SHELF_Q,
+        PREAMP_SHELF_TYPE,
         VALID_SOURCES,
         PeqBand,
-        Profile,
+        ProfileError,
         WiimClient,
+        device_name,
+        fetch_autoeq_index,
+        fetch_profile_from_path,
+        normalize_preamp_mode,
         parse_profile,
+        plan_bands,
         requests,  # re-use the same requests import (and its urllib3 warning suppression)
+        split_preamp_band,
+        validate_host,
     )
 except ImportError as e:
     print(f"error: couldn't import wiim_autoeq.py from the same directory: {e}",
@@ -74,55 +81,32 @@ app = Flask(__name__)
 _HEADPHONE_CACHE: list[dict] | None = None
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# AutoEQ index loading
-# ──────────────────────────────────────────────────────────────────────────────
-
 def load_headphone_index() -> list[dict]:
-    """Fetch & parse AutoEQ's results/README.md into a list of headphones."""
+    """Fetch & parse AutoEQ's results/README.md (cached after first success)."""
     global _HEADPHONE_CACHE
-    if _HEADPHONE_CACHE is not None:
-        return _HEADPHONE_CACHE
-
-    r = requests.get(AUTOEQ_RESULTS_README, timeout=20)
-    r.raise_for_status()
-    body = r.text
-
-    # Match markdown links. The URL may contain balanced (…) from headphone names
-    # (e.g. "Sony WH-1000XM4 (2021)"), so we use a pattern that allows one level
-    # of nested parens instead of a lazy \S+? that stops at the first ')'.
-    link_re = re.compile(r"\[([^\]]+)\]\(\.?/?((?:[^()\s]|\([^)]*\))*)\)")
-    seen = set()
-    items: list[dict] = []
-    for name, path in link_re.findall(body):
-        decoded = urllib.parse.unquote(path).lstrip("./")
-        # Skip non-folder links (images, anchors, etc.) and known meta links.
-        if "/" not in decoded or decoded.endswith(".md"):
-            continue
-        key = (name, decoded)
-        if key in seen:
-            continue
-        seen.add(key)
-        items.append({"name": name, "path": decoded})
-
-    # Sort alphabetically, case-insensitively.
-    items.sort(key=lambda d: d["name"].lower())
-    _HEADPHONE_CACHE = items
-    return items
+    if _HEADPHONE_CACHE is None:
+        _HEADPHONE_CACHE = fetch_autoeq_index(timeout=20)
+    return _HEADPHONE_CACHE
 
 
-def fetch_profile_from_path(folder_path: str) -> tuple[str, str]:
-    """Given an AutoEQ folder path like 'oratory1990/over-ear/Sennheiser HD 600',
-    fetch the ParametricEQ.txt and return (text, url)."""
-    leaf = folder_path.rstrip("/").rsplit("/", 1)[-1]
-    file_path = f"{folder_path.rstrip('/')}/{leaf} ParametricEQ.txt"
-    url = f"{AUTOEQ_RAW_BASE}/results/{urllib.parse.quote(file_path, safe='/()')}"
-    r = requests.get(url, timeout=20)
-    if r.status_code != 200:
-        raise RuntimeError(
-            f"AutoEQ returned HTTP {r.status_code} for that headphone. "
-            f"The folder may not contain a ParametricEQ.txt file.")
-    return r.text, url
+def _band_dict(b: PeqBand) -> dict:
+    return {"type": b.type, "fc": round(b.fc, 2), "gain": round(b.gain, 2),
+            "q": round(b.q, 3)}
+
+
+def _plan_dict(plan) -> dict:
+    return {"preamp": plan.preamp, "preamp_applied": plan.preamp_applied,
+            "warning": plan.warning, "bands_written": len(plan.bands)}
+
+
+def _err(msg: str, status: int = 400):
+    return jsonify({"ok": False, "error": msg}), status
+
+
+def _client_from(args) -> WiimClient:
+    """Build a client from request args/JSON; raises ValueError on a bad ip."""
+    use_http = args.get("http") in (True, "1", "true", 1)
+    return WiimClient(validate_host(args.get("ip") or ""), use_http=use_http)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -254,14 +238,13 @@ def api_discover():
 @app.get("/api/test-connection")
 def api_test_connection():
     """Verify a WiiM responds on the given IP by calling getStatusEx."""
-    ip = (request.args.get("ip") or "").strip()
-    use_http = request.args.get("http") == "1"
-    if not ip:
-        return jsonify({"ok": False, "error": "missing 'ip' parameter"}), 400
-
-    client = WiimClient(ip, use_http=use_http, dry_run=False)
     try:
-        info = client._call("getStatusEx")
+        client = _client_from(request.args)
+    except ValueError as e:
+        return _err(str(e))
+    ip = request.args.get("ip", "").strip()
+    try:
+        info = client.status()
     except requests.exceptions.SSLError:
         return jsonify({
             "ok": False,
@@ -274,48 +257,38 @@ def api_test_connection():
                      "check the IP and that the device is on the same network.",
         }), 200
     except requests.exceptions.Timeout:
-        return jsonify({
-            "ok": False,
-            "error": f"timed out connecting to {ip}.",
-        }), 200
+        return jsonify({"ok": False, "error": f"timed out connecting to {ip}."}), 200
     except Exception as e:  # noqa: BLE001 - surface any oddball failures to the UI
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 200
 
-    # getStatusEx returns a JSON object. The useful bits:
-    name = (info or {}).get("ssid") or "(unknown)"
-    firmware = (info or {}).get("firmware") or "(unknown)"
-    project = (info or {}).get("project") or ""
     return jsonify({
         "ok": True,
-        "device_name": name,
-        "firmware": firmware,
-        "project": project,
+        "device_name": device_name(info),
+        "firmware": info.get("firmware") or "(unknown)",
+        "project": info.get("project") or "",
     })
 
 
 @app.get("/api/get-current-eq")
 def api_get_current_eq():
-    """Read the active EQ bands currently loaded on the device for a given source."""
-    ip = (request.args.get("ip") or "").strip()
+    """Read the active EQ bands on the device for a source. Our broadband
+    preamp shelf (if present) is split out and returned as `preamp`."""
     source = (request.args.get("source") or "wifi").strip()
-    use_http = request.args.get("http") == "1"
-    if not ip:
-        return jsonify({"ok": False, "error": "missing 'ip' parameter"}), 400
     if source not in VALID_SOURCES:
-        return jsonify({"ok": False, "error": f"invalid source '{source}'"}), 400
-    client = WiimClient(ip, use_http=use_http)
+        return _err(f"invalid source '{source}'")
+    try:
+        client = _client_from(request.args)
+    except ValueError as e:
+        return _err(str(e))
     try:
         bands = client.get_current_eq(source)
     except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 502
+        return _err(f"{e.__class__.__name__}: {e}", 502)
     if bands is None:
         return jsonify({"ok": False, "error": "device returned no EQ data"}), 200
-    return jsonify({
-        "ok": True,
-        "source": source,
-        "bands": [{"type": b.type, "fc": b.fc, "gain": b.gain, "q": b.q}
-                  for b in bands],
-    })
+    bands, preamp = split_preamp_band(bands)
+    return jsonify({"ok": True, "source": source, "preamp": preamp,
+                    "bands": [_band_dict(b) for b in bands]})
 
 
 @app.get("/api/headphones")
@@ -324,42 +297,30 @@ def api_headphones():
     try:
         items = load_headphone_index()
     except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": str(e)}), 502
+        return _err(str(e), 502)
     return jsonify({"ok": True, "count": len(items), "headphones": items})
 
 
 @app.get("/api/preview-peq")
 def api_preview_peq():
     """Fetch and parse an AutoEQ profile without writing to the device.
-    Returns the bands with both raw and preamp-adjusted gains for the editor."""
+    Band gains are returned untouched; the preamp plan says how the preamp
+    would be realised."""
     folder_path = (request.args.get("path") or "").strip()
-    preamp_mode = (request.args.get("preamp_mode") or "subtract").strip()
     if not folder_path:
-        return jsonify({"ok": False, "error": "missing 'path' parameter"}), 400
-    if preamp_mode not in {"subtract", "warn", "ignore"}:
-        return jsonify({"ok": False, "error": "invalid preamp_mode"}), 400
+        return _err("missing 'path' parameter")
     try:
+        mode = normalize_preamp_mode(
+            (request.args.get("preamp_mode") or "shelf").strip())
         text, url = fetch_profile_from_path(folder_path)
         profile = parse_profile(text)
+        plan = plan_bands(profile.bands, profile.preamp, mode)
+    except ProfileError as e:
+        return _err(str(e))
     except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": f"couldn't load profile: {e}"}), 502
-    adjust = profile.preamp if preamp_mode == "subtract" else 0.0
-    return jsonify({
-        "ok": True,
-        "source_url": url,
-        "preamp": profile.preamp,
-        "preamp_applied": adjust,
-        "bands": [
-            {
-                "type": b.type,
-                "fc": round(b.fc, 2),
-                "gain": round(b.gain, 2),
-                "gain_device": round(b.gain + adjust, 2),
-                "q": round(b.q, 3),
-            }
-            for b in profile.bands
-        ],
-    })
+        return _err(f"couldn't load profile: {e}", 502)
+    return jsonify({"ok": True, "source_url": url, **_plan_dict(plan),
+                    "bands": [_band_dict(b) for b in profile.bands]})
 
 
 @app.post("/api/apply-peq")
@@ -367,111 +328,74 @@ def api_apply_peq():
     """Push a PEQ profile to the WiiM.
 
     Accepts two forms:
-      • {"path": "...", "preamp_mode": "...", ...}  — fetch from AutoEQ then push
-      • {"bands": [...], "name": "...", ...}         — push pre-parsed/edited bands directly
+      • {"path": "...", "preamp_mode": "..."}            — fetch from AutoEQ then push
+      • {"bands": [...], "preamp": -6.2, "name": "..."}  — push edited bands directly
+
+    Everything is parsed and validated before the first device call, so bad
+    input can never leave the device with PEQ switched off half-way.
     """
     data = request.get_json(silent=True) or {}
-    ip = (data.get("ip") or "").strip()
     source = (data.get("source") or "wifi").strip()
-    use_http = bool(data.get("http"))
-
-    if not ip:
-        return jsonify({"ok": False, "error": "missing WiiM IP"}), 400
     if source not in VALID_SOURCES:
-        return jsonify({"ok": False, "error": f"invalid source '{source}'"}), 400
+        return _err(f"invalid source '{source}'")
+    try:
+        client = _client_from(data)
+    except ValueError as e:
+        return _err(str(e))
 
-    # ── Direct bands mode (from the editor) ──────────────────────────
-    if data.get("bands") is not None:
-        try:
-            bands = [
-                PeqBand(type=b["type"], fc=float(b["fc"]),
-                        gain=float(b["gain"]), q=float(b["q"]))
-                for b in data["bands"]
-            ]
-        except (KeyError, TypeError, ValueError) as e:
-            return jsonify({"ok": False, "error": f"invalid bands: {e}"}), 400
-        preset_name = (data.get("name") or "custom").strip()
-        client = WiimClient(ip, use_http=use_http, dry_run=False)
-        try:
-            client.peq_off(source)
-            for i, band in enumerate(bands):
-                client.set_band(source, i, band)
-            client.clear_unused_bands(source, used=len(bands))
-            client.peq_save_name(source, preset_name)
-            client.peq_on(source)
-        except Exception as e:  # noqa: BLE001
-            traceback.print_exc()
-            return jsonify({
-                "ok": False,
-                "error": f"device call failed: {e.__class__.__name__}: {e}",
-            }), 502
-        return jsonify({
-            "ok": True,
-            "source_url": None,
-            "preamp": 0.0,
-            "preamp_applied": 0.0,
-            "bands": [{"type": b.type, "fc": b.fc, "gain": b.gain, "q": b.q}
-                      for b in bands],
-        })
-
-    # ── Path-based mode (fetch from AutoEQ) ──────────────────────────
-    folder_path = (data.get("path") or "").strip()
-    preamp_mode = data.get("preamp_mode") or "subtract"
-    if not folder_path:
-        return jsonify({"ok": False, "error": "missing headphone path"}), 400
-    if preamp_mode not in {"subtract", "warn", "ignore"}:
-        return jsonify({"ok": False, "error": "invalid preamp_mode"}), 400
+    url = None
+    try:
+        mode = normalize_preamp_mode(data.get("preamp_mode") or "shelf")
+        if data.get("bands") is not None:
+            if not isinstance(data["bands"], list):
+                raise ProfileError("'bands' must be a list")
+            try:
+                bands = [PeqBand(type=str(b["type"]), fc=float(b["fc"]),
+                                 gain=float(b["gain"]), q=float(b["q"]))
+                         for b in data["bands"]]
+                preamp = float(data.get("preamp") or 0.0)
+            except (KeyError, TypeError, ValueError) as e:
+                raise ProfileError(f"invalid bands: {e}") from None
+            name = (data.get("name") or "custom").strip()
+        else:
+            folder_path = (data.get("path") or "").strip()
+            if not folder_path:
+                raise ProfileError("missing headphone path")
+            try:
+                text, url = fetch_profile_from_path(folder_path)
+            except Exception as e:  # noqa: BLE001
+                return _err(f"couldn't load profile: {e}", 502)
+            profile = parse_profile(text)
+            bands, preamp = profile.bands, profile.preamp
+            name = (data.get("name") or folder_path.rstrip("/").rsplit("/", 1)[-1])
+        plan = plan_bands(bands, preamp, mode)
+    except ProfileError as e:
+        return _err(str(e))
 
     try:
-        text, url = fetch_profile_from_path(folder_path)
-        profile = parse_profile(text)
-    except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": f"couldn't load profile: {e}"}), 502
-
-    adjust = profile.preamp if preamp_mode == "subtract" else 0.0
-
-    client = WiimClient(ip, use_http=use_http, dry_run=False)
-    try:
-        client.peq_off(source)
-        for i, band in enumerate(profile.bands):
-            client.set_band(source, i, band, preamp_adjust=adjust)
-        client.clear_unused_bands(source, used=len(profile.bands))
-        client.peq_on(source)
+        client.apply_plan(source, plan, name)
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
-        return jsonify({
-            "ok": False,
-            "error": f"device call failed: {e.__class__.__name__}: {e}",
-        }), 502
+        return _err(f"device call failed: {e.__class__.__name__}: {e}", 502)
 
-    return jsonify({
-        "ok": True,
-        "source_url": url,
-        "preamp": profile.preamp,
-        "preamp_applied": adjust,
-        "bands": [
-            {"type": b.type, "fc": b.fc, "gain": b.gain, "q": b.q}
-            for b in profile.bands
-        ],
-    })
+    return jsonify({"ok": True, "source_url": url, **_plan_dict(plan),
+                    "bands": [_band_dict(b) for b in bands]})
 
 
 @app.post("/api/peq-off")
 def api_peq_off():
     data = request.get_json(silent=True) or {}
-    ip = (data.get("ip") or "").strip()
     source = (data.get("source") or "wifi").strip()
-    use_http = bool(data.get("http"))
-    if not ip:
-        return jsonify({"ok": False, "error": "missing WiiM IP"}), 400
     if source not in VALID_SOURCES:
-        return jsonify({"ok": False, "error": f"invalid source '{source}'"}), 400
-
-    client = WiimClient(ip, use_http=use_http, dry_run=False)
+        return _err(f"invalid source '{source}'")
+    try:
+        client = _client_from(data)
+    except ValueError as e:
+        return _err(str(e))
     try:
         client.peq_off(source)
     except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": str(e)}), 502
+        return _err(str(e), 502)
     return jsonify({"ok": True})
 
 
@@ -689,8 +613,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div>
         <label for="preamp-mode">Preamp handling</label>
         <select id="preamp-mode">
-          <option value="subtract" selected>subtract from every band (recommended)</option>
-          <option value="warn">warn only, don't modify gains</option>
+          <option value="shelf" selected>apply on a spare band (recommended)</option>
+          <option value="warn">warn only — I'll lower the volume myself</option>
           <option value="ignore">ignore the preamp entirely</option>
         </select>
       </div>
@@ -705,7 +629,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
     <div id="off-status" class="status"></div>
     <div class="muted" style="margin-top: 8px;">
-      WiiM has no preamp slider. AutoEQ profiles expect one — subtracting it keeps levels safe.
+      WiiM has no preamp control. AutoEQ profiles expect one, so it's written to a spare band as a
+      broadband shelf (the band gains themselves are never changed). If a profile uses all 10 bands,
+      lower the device volume by the preamp amount instead.
     </div>
   </div>
 
@@ -714,7 +640,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <h2>EQ bands <span class="badge" style="text-transform:none;font-size:11px;">editable</span></h2>
     <div id="preamp-info" class="muted" style="margin-bottom:10px;font-size:13px;"></div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-      <span style="font-size:13px;color:var(--muted);">Additional preamp offset</span>
+      <span style="font-size:13px;color:var(--muted);">Preamp</span>
       <input type="number" id="preamp-input" value="0" step="0.5" min="-30" max="30"
              style="width:72px;padding:3px 6px;font-size:13px;font-family:inherit;
                     background:var(--panel-2);color:var(--text);
@@ -784,7 +710,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   let filterActive = 0;       // index of currently-highlighted dropdown item
   let mode = "discovered";    // "discovered" | "manual"
   let loadedProfile = null;   // response from /api/preview-peq
-  let preampDB = 0;           // cumulative preamp offset currently applied to the table
+  let preampDB = 0;           // broadband preamp, written as a separate shelf band
+  const N_BANDS = {{ n_bands }};
+  const SHELF = { type: "{{ shelf_type }}", fc: {{ shelf_fc }}, q: {{ shelf_q }} };
   let isDraggingPreamp = false;
 
   function setStatus(el, text, cls) {
@@ -933,9 +861,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     if (!j.ok || !j.bands || !j.bands.length) return;
     // Treat all gains as already "device-ready" (no preamp metadata available)
     const profile = {
-      preamp: 0,
-      preamp_applied: 0,
-      bands: j.bands.map(b => ({ ...b, gain_device: b.gain })),
+      preamp: j.preamp || 0,
+      preamp_applied: j.preamp || 0,
+      bands: j.bands,
       _fromDevice: true,
     };
     loadedProfile = profile;
@@ -1074,7 +1002,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       }
       loadedProfile = j;
       const adjNote = j.preamp_applied !== 0
-        ? ` (preamp ${j.preamp.toFixed(2)} dB already applied)`
+        ? ` + ${j.preamp.toFixed(1)} dB preamp shelf`
         : "";
       setStatus(applyStat,
         `loaded ${j.bands.length} bands${adjNote} — review and edit below, then apply.`, "ok");
@@ -1190,6 +1118,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     // Build coefficients for each active band
     const bands = getBandsFromTable().filter(b => isFinite(b.fc) && isFinite(b.gain) && isFinite(b.q) && b.q > 0);
     const coeffsList = bands.map(b => biquadCoeffs(b.type, b.fc, b.gain, b.q));
+    if (preampDB !== 0 && bands.length < N_BANDS)
+      coeffsList.push(biquadCoeffs(SHELF.type, SHELF.fc, preampDB, SHELF.q));
 
     // Evaluate at 400 log-spaced frequencies 20 Hz → 20 kHz
     const N = 400;
@@ -1270,24 +1200,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   // Redraw on any band-table input change
-  bandEditCont.addEventListener("input",  () => drawEqCurve());
+  bandEditCont.addEventListener("input",  () => { updatePreampInfo(); drawEqCurve(); });
   bandEditCont.addEventListener("change", () => drawEqCurve());
   window.addEventListener("resize", () => { if (eqEditor.style.display !== "none") drawEqCurve(); });
 
   // ── Preamp offset control ─────────────────────────────────────────
-  function applyPreampDelta(delta) {
-    if (delta === 0) return;
-    bandEditCont.querySelectorAll(".band-gain").forEach(inp => {
-      inp.value = (Math.round((parseFloat(inp.value) + delta) * 10) / 10).toFixed(1);
-    });
-    preampDB = Math.round((preampDB + delta) * 10) / 10;
-    preampInput.value = preampDB.toFixed(1);
+  function setPreamp(newVal) {
+    preampDB = Math.max(-30, Math.min(30, Math.round(newVal * 10) / 10));
+    if (document.activeElement !== preampInput) preampInput.value = preampDB.toFixed(1);
+    updatePreampInfo();
     drawEqCurve();
   }
 
-  function setPreamp(newVal) {
-    newVal = Math.max(-30, Math.min(30, Math.round(newVal * 10) / 10));
-    applyPreampDelta(newVal - preampDB);
+  function updatePreampInfo() {
+    const n = getBandsFromTable().length;
+    if (preampDB === 0) {
+      preampInfo.textContent = loadedProfile && loadedProfile._fromDevice
+        ? `Loaded from device (${sourceSel.value} source) — showing what's currently active.`
+        : "";
+    } else if (n >= N_BANDS) {
+      preampInfo.textContent =
+        `Preamp ${preampDB.toFixed(1)} dB can't be applied: all ${N_BANDS} bands are in use. ` +
+        `Lower the WiiM volume by ${Math.abs(preampDB).toFixed(1)} dB instead.`;
+    } else {
+      preampInfo.textContent =
+        `Preamp ${preampDB.toFixed(1)} dB will be written to band ${n} as a broadband shelf.`;
+    }
   }
 
   preampInput.addEventListener("change", () => setPreamp(parseFloat(preampInput.value) || 0));
@@ -1350,21 +1288,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   // ── EQ band editor ───────────────────────────────────────────────
   function renderBandEditor(profile) {
-    if (profile._fromDevice) {
-      preampInfo.textContent =
-        `Loaded from device (${sourceSel.value} source) — showing what's currently active.`;
-    } else if (profile.preamp_applied !== 0) {
-      preampInfo.textContent =
-        `AutoEQ preamp: ${profile.preamp.toFixed(2)} dB — already subtracted from the gains below.`;
-    } else if (profile.preamp !== 0) {
-      preampInfo.textContent =
-        `AutoEQ preamp: ${profile.preamp.toFixed(2)} dB — not applied (preamp mode setting).`;
-    } else {
-      preampInfo.textContent = "";
-    }
-
-    preampDB = 0;
-    preampInput.value = "0";
 
     const bands = [...profile.bands].sort((a, b) => a.fc - b.fc);
 
@@ -1377,7 +1300,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <th class="col-q">Q</th>
       </tr></thead><tbody>`;
     bands.forEach((b, i) => {
-      const gain = b.gain_device !== undefined ? b.gain_device : b.gain;
+      const gain = b.gain;
       html += `<tr data-band="${i}">
         <td>${i}</td>
         <td><select class="band-type">
@@ -1392,6 +1315,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     });
     html += `</tbody></table>`;
     bandEditCont.innerHTML = html;
+    // Preamp is a separate control; the band gains above are the profile's own.
+    preampDB = 0;
+    setPreamp(profile.preamp_applied || 0);
+    if (!profile._fromDevice && profile.warning) preampInfo.textContent = profile.warning;
     // Defer one frame so the canvas has its final layout size before drawing
     requestAnimationFrame(drawEqCurve);
   }
@@ -1420,6 +1347,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
           source: sourceSel.value,
           http: httpCb.checked,
           bands,
+          preamp: preampDB,
           name: selectedHp ? selectedHp.name : "custom",
         }),
       });
@@ -1428,7 +1356,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
         setStatus(confirmStat, "✗ " + (j.error || "failed"), "err");
       } else {
         setStatus(confirmStat,
-          `✓ ${j.bands.length} bands written. exit & re-enter the EQ screen in WiiM Home to see them.`, "ok");
+          `✓ ${j.bands_written} bands written` +
+          (j.warning ? ` — note: ${j.warning}` : "") +
+          `. exit & re-enter the EQ screen in WiiM Home to see them.`, j.warning ? "warn" : "ok");
       }
     } catch (e) {
       setStatus(confirmStat, "✗ request failed: " + e.message, "err");
@@ -1478,7 +1408,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 @app.get("/")
 def index():
-    return render_template_string(INDEX_HTML)
+    return render_template_string(
+        INDEX_HTML, n_bands=N_BANDS, shelf_type=PREAMP_SHELF_TYPE,
+        shelf_fc=PREAMP_SHELF_FC, shelf_q=PREAMP_SHELF_Q)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

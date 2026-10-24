@@ -14,7 +14,8 @@ have a way to import those profiles. This project bridges the two:
 
 - picks a headphone from the AutoEQ catalog
 - downloads the matching `ParametricEQ.txt`
-- pushes all 10 bands (plus the preamp) to your WiiM over its local HTTP API
+- pushes the bands to your WiiM over its local HTTP API, with the profile's
+  preamp written to a spare band as a broadband shelf (see [Preamp](#preamp))
 - clears any stale bands left over from a previous profile
 
 There are two interfaces to the same underlying logic:
@@ -50,7 +51,8 @@ This opens the EQ band editor, which shows:
 - an interactive **frequency-response graph** rendered from the actual biquad
   coefficients, updated live as you edit
 - a **draggable preamp slider** on the right edge of the graph, plus a numeric
-  **Additional preamp offset** field for fine control
+  **Preamp** field — the preamp is kept separate from the band gains and
+  written as its own broadband shelf band
 - an editable **band table** (type, frequency, gain, Q) — tweak any values
   before writing to the device
 
@@ -95,8 +97,9 @@ Other useful flags:
   `oratory1990`)
 - `--target <curve>` — AutoEQ target curve to prefer (default:
   `harman_over-ear_2018`)
-- `--preamp-mode subtract|warn|ignore` — how to handle the profile's preamp
-  value (default: `subtract`, since WiiM has no preamp slider)
+- `--preamp-mode shelf|warn|ignore` — how to handle the profile's preamp
+  (default: `shelf`; see [Preamp](#preamp). `subtract` is accepted as a
+  deprecated alias for `shelf`)
 - `--http` — use plain HTTP instead of HTTPS (try this if you get SSL errors)
 - `--dry-run` — show what would be sent without actually calling the device
 - `--log-level DEBUG|INFO|WARNING|ERROR` — logging verbosity (default:
@@ -175,8 +178,27 @@ WiiM Home app.
 Applying a profile looks like this on the wire:
 
 1. `EQSourceOff` — disable the EQ on that source
-2. Ten `EQSetLV2SourceBand` calls writing bands `a_` through `j_`
-3. `EQChangeSourceFX` — re-enable the EQ with the new bands
+2. Ten `EQSetLV2SourceBand` calls writing bands `a_` through `j_` (profile
+   bands, then the preamp shelf, then flat bands for anything unused)
+3. `EQSourceSave` — store the preset name
+4. `EQChangeSourceFX` — re-enable the EQ with the new bands
+
+All input is parsed and validated before step 1, so a bad profile or edited
+band can never leave the device with its EQ switched off half-way.
+
+### Preamp
+
+AutoEQ profiles boost some frequencies and rely on a negative preamp to keep
+the peaks from clipping. WiiM's PEQ has no preamp control, and adding the
+preamp to every band's gain does **not** work for a parametric EQ — a
+`+6 dB` bass peak with a `-6 dB` preamp would simply vanish, cuts would get
+deeper, and everything between bands would stay at 0 dB.
+
+Instead, the preamp is written to the first spare band as a high shelf at
+20 Hz. That passes the whole audible range at the preamp gain (within 0.5 dB
+from 40 Hz up; the bottom octave gets up to ~3 dB less attenuation). If a
+profile uses all 10 bands there is no spare band, so the tool leaves the
+profile intact and tells you to lower the device volume by the preamp amount.
 
 The browser can't talk to the WiiM directly because of the self-signed TLS
 cert and CORS, which is why the web UI runs as a small local Flask server:
@@ -200,13 +222,16 @@ auto-discovery won't find the device. Use the manual-IP fallback.
 
 ## Security
 
-A security review of the codebase found no high-confidence exploitable
-vulnerabilities. Key points:
+Key points:
+
+**Input validation.** The device address is validated as an IP or hostname
+(with optional port) before it's used in a URL, and every band is checked
+before anything is written to the device.
 
 **Network exposure.** The web UI binds to `127.0.0.1` by default, so only
 processes on your local machine can reach it. If you expose it to the network
 (via `--host 0.0.0.0` or Docker with `network_mode: host`), treat it like any
-other unauthenicated local-network service — run it only on a trusted network.
+other unauthenticated local-network service — run it only on a trusted network.
 
 **Output handling.** All status messages in the browser UI use `textContent`
 (not `innerHTML`), which prevents HTML injection. Every `innerHTML` assignment

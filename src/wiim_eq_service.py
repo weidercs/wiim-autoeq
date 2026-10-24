@@ -322,7 +322,10 @@ def _run(fn, *args, **kw):
 
 
 def _body() -> dict:
-    return request.get_json(silent=True) or {}
+    """JSON body, with query-string parameters as a fallback. The query form
+    lets Home Assistant call the API from a shell_command with URL-encoded
+    values (no JSON quoting to get wrong)."""
+    return {**request.args.to_dict(), **(request.get_json(silent=True) or {})}
 
 
 @api.get("/devices")

@@ -162,6 +162,13 @@ def test_api_end_to_end(env):
     assert h["devices"] == 3 and h["discovery_age_s"] is not None
 
 
+def test_api_accepts_query_params(env):
+    c = web.app.test_client()
+    r = c.post("/api/v1/apply?device=office&headphone=HD%20600&source=Optical%20In")
+    j = r.get_json()
+    assert r.status_code == 200 and j["source"] == "optical" and j["headphone"].endswith("HD 600")
+
+
 def test_ui_discover_uses_sidecar_file(env):
     j = web.app.test_client().get("/api/discover").get_json()
     assert j["ok"] and j["count"] == 3

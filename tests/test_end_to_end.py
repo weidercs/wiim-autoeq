@@ -221,7 +221,7 @@ def main() -> int:
             "ip": wiim_ip,
             "path": "oratory1990/over-ear/Sennheiser HD 600",
             "source": "wifi",
-            "preamp_mode": "subtract",
+            "preamp_mode": "shelf",
             "http": True,
         })
         j = r.json()
@@ -229,18 +229,40 @@ def main() -> int:
         check("preamp = -6.2", j.get("preamp") == -6.2)
         check("5 bands applied", len(j.get("bands", [])) == 5)
         cmds = [e["command"] for e in wiim_log]
-        check("12 device calls total", len(cmds) == 12, f"got {len(cmds)}")
-        check("first is EQSourceOff",
-              cmds[0].startswith("EQSourceOff:"))
-        check("last is EQChangeSourceFX",
-              cmds[-1].startswith("EQChangeSourceFX:"))
-        # Verify preamp subtraction: band 0 (LSC, 105 Hz, 6.7 dB) - 6.2 preamp = 0.5
-        band0 = json.loads(next(c for c in cmds if c.startswith("EQSetLV2SourceBand:"))
-                           .split(":", 1)[1])
-        eq_params = {item["param_name"]: item["value"] for item in band0.get("EQBand", [])}
-        check("band 0 gain = 0.5 after preamp",
-              abs(eq_params.get("a_gain", 0) - 0.5) < 0.01,
-              f"a_gain={eq_params.get('a_gain')}")
+        # off + 10 bands (5 profile + 1 preamp shelf + 4 flattened) + save + on
+        check("13 device calls total", len(cmds) == 13, f"got {len(cmds)}")
+        check("first is EQSourceOff", cmds[0].startswith("EQSourceOff:"))
+        check("save before activate", cmds[-2].startswith("EQSourceSave:"))
+        check("last is EQChangeSourceFX", cmds[-1].startswith("EQChangeSourceFX:"))
+        check("preamp_applied = -6.2", j.get("preamp_applied") == -6.2, str(j)[:160])
+
+        def band_params(n):
+            blob = [c for c in cmds if c.startswith("EQSetLV2SourceBand:")][n]
+            band = json.loads(blob.split(":", 1)[1])
+            return {item["param_name"][2:]: item["value"] for item in band["EQBand"]}
+
+        # Band gains are written verbatim — the preamp must NOT be folded in.
+        check("band 0 gain unchanged (6.7)",
+              abs(band_params(0)["gain"] - 6.7) < 0.01, str(band_params(0)))
+        # Preamp lands on the first spare band as a 20 Hz high shelf.
+        b5 = band_params(5)
+        check("band 5 is preamp shelf",
+              b5["mode"] == 2 and b5["freq"] == 20.0 and abs(b5["gain"] + 6.2) < 0.01,
+              str(b5))
+
+        print("\n── /api/apply-peq (bad input, nothing sent) ────────")
+        wiim_log.clear()
+        r = requests.post(f"{base}/api/apply-peq", json={
+            "ip": wiim_ip, "source": "wifi", "http": True,
+            "bands": [{"type": "PK", "fc": 1000, "gain": 1, "q": 1},
+                      {"type": "BOGUS", "fc": 1000, "gain": 1, "q": 1}],
+        })
+        check("HTTP 400", r.status_code == 400, f"got {r.status_code}")
+        check("no device calls made", wiim_log == [], str(wiim_log))
+
+        r = requests.get(f"{base}/api/test-connection",
+                         params={"ip": "127.0.0.1/evil#", "http": "1"})
+        check("bad ip rejected", r.status_code == 400, f"got {r.status_code}")
 
         print("\n── /api/peq-off ─────────────────────────────────────")
         wiim_log.clear()
@@ -278,6 +300,11 @@ def main() -> int:
             print(f"  {failures} test(s) FAILED ✗")
         print(f"{'═' * 55}\n")
         return 0 if failures == 0 else 1
+
+
+def test_end_to_end():
+    """pytest entry point — the script also still runs standalone."""
+    assert main() == 0
 
 
 if __name__ == "__main__":

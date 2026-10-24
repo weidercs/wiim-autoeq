@@ -7,3 +7,8 @@ flask>=2.3
 # mDNS/Bonjour device discovery (optional — web UI falls back to manual IP
 # entry if this isn't installed, but you want it)
 zeroconf>=0.130
+
+# wiim-eq service (API + MCP). Optional for the CLI / plain web UI.
+mcp>=1.12,<2; python_version >= "3.10"
+uvicorn>=0.30; python_version >= "3.10"
+a2wsgi>=1.10; python_version >= "3.10"

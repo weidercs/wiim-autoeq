@@ -1,7 +1,32 @@
+# wiim-eq: the service (UI + Home Assistant API + MCP) plus a discovery sidecar.
+#
+# The sidecar runs on the host network so mDNS reaches your WiiMs (across
+# VLANs too, if your router repeats mDNS). It exposes no ports and only writes
+# ./data/devices.json. The service reads that file and stays on a normal
+# bridge network, so you can put it behind a reverse proxy with auth.
+#
+# Nothing here authenticates requests: publish port 8000 only on a trusted
+# network, or put it behind a proxy (see README → "Running as a service").
 services:
-  wiim-autoeq:
+  wiim-eq:
     build: .
-    # ports:
-    #   - "5173:5173"
-    network_mode: host  # uncomment on Linux for mDNS device auto-discovery;
-    #                     # not needed on Mac/Windows (use manual IP entry instead)
+    image: wiim-eq:local
+    container_name: wiim-eq
+    restart: unless-stopped
+    user: "1000:1000"
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  wiim-eq-discovery:
+    image: wiim-eq:local
+    container_name: wiim-eq-discovery
+    restart: unless-stopped
+    user: "1000:1000"
+    network_mode: host
+    command: ["python3", "src/wiim_discovery.py"]
+    environment:
+      WIIM_DEVICES_FILE: /data/devices.json
+    volumes:
+      - ./data:/data

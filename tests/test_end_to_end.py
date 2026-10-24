@@ -303,8 +303,13 @@ def main() -> int:
 
 
 def test_end_to_end():
-    """pytest entry point — the script also still runs standalone."""
-    assert main() == 0
+    """pytest entry point. Runs the script in its own interpreter: it boots
+    real servers on fixed ports and needs a Flask app no other test touched."""
+    import subprocess
+    r = subprocess.run([sys.executable, __file__], capture_output=True, text=True,
+                       timeout=120)
+    print(r.stdout[-4000:], r.stderr[-2000:])
+    assert r.returncode == 0
 
 
 if __name__ == "__main__":

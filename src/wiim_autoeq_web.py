@@ -80,6 +80,11 @@ app = Flask(__name__)
 # Structure: list of {"name": str, "path": str}  (path relative to results/)
 _HEADPHONE_CACHE: list[dict] | None = None
 
+# Optional override for /api/discover: a zero-arg callable returning
+# [{"ip", "name", ...}]. The wiim-eq service sets this to read the discovery
+# sidecar's file, since its own container can't see mDNS.
+DEVICE_LIST_PROVIDER = None
+
 
 def load_headphone_index() -> list[dict]:
     """Fetch & parse AutoEQ's results/README.md (cached after first success)."""
@@ -215,6 +220,12 @@ def discover_wiim_devices(timeout: float = 2.5) -> list[dict]:
 @app.get("/api/discover")
 def api_discover():
     """Browse the LAN for WiiM devices via mDNS. Takes a few seconds."""
+    if DEVICE_LIST_PROVIDER is not None:
+        try:
+            devices = DEVICE_LIST_PROVIDER()
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"ok": False, "error": str(e)}), 200
+        return jsonify({"ok": True, "count": len(devices), "devices": devices})
     if not _ZEROCONF_AVAILABLE:
         return jsonify({
             "ok": False,
@@ -522,6 +533,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
     .eq-editor-table .col-freq { width: 100px; }
     .eq-editor-table .col-gain { width: 90px; }
     .eq-editor-table .col-q   { width: 80px; }
+    .svc-only { display: none; }
+    body.svc .svc-only { display: block; }
+    .fav-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+    .chip { font-size: 12px; padding: 5px 10px; border-radius: 999px; }
+    .chip.active { border-color: var(--accent); color: var(--accent); }
+    .auto-table select { width: 100%; min-width: 0; padding: 5px 6px; font-size: 13px;
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 5px; font-family: inherit; }
+    .auto-table td { vertical-align: middle; }
+    .icon-btn { padding: 4px 9px; font-size: 13px; }
+    @media (max-width: 600px) { .auto-table .hide-sm { display: none; } }
   </style>
 </head>
 <body>
@@ -581,14 +603,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <!-- ── Headphone selection ─────────────────────────────────────── -->
   <div class="card">
     <h2>Headphone</h2>
+    <div class="svc-only">
+      <label>Favorites</label>
+      <div id="fav-chips" class="fav-chips"><span class="muted">none yet — search below and star one</span></div>
+    </div>
     <label for="hp-search">Search the AutoEQ database (~6000 headphones)</label>
     <div class="hp-dropdown">
       <input type="text" id="hp-search" placeholder="loading list…" autocomplete="off" disabled>
       <div id="hp-list" class="hp-list"></div>
     </div>
     <div id="hp-selected" class="muted" style="margin-top:8px;"></div>
-    <div style="margin-top:12px;">
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
       <button id="apply-btn" class="primary" disabled>Load Profile</button>
+      <button id="fav-btn" class="svc-only" style="display:none" disabled>☆ Add to favorites</button>
     </div>
     <div id="apply-status" class="status"></div>
   </div>
@@ -659,6 +686,29 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div></div>
     </div>
     <div id="confirm-status" class="status"></div>
+  </div>
+
+  <!-- ── Auto EQ per input (service mode only) ─────────────────── -->
+  <div class="card svc-only" id="auto-card">
+    <h2>Auto EQ per input</h2>
+    <div class="muted" style="margin-bottom:8px;">
+      When a device switches to an input, Home Assistant tells this service and the matching
+      favorite is loaded automatically.
+    </div>
+    <table class="band-table auto-table">
+      <thead><tr><th>Device</th><th>Input</th><th>Headphone</th><th></th></tr></thead>
+      <tbody id="auto-body"></tbody>
+      <tfoot><tr>
+        <td><select id="auto-dev"></select></td>
+        <td><select id="auto-src">
+          <option>wifi</option><option>line-in</option><option>bluetooth</option>
+          <option>optical</option><option>coaxial</option><option>hdmi</option>
+          <option>phono</option><option>usb</option></select></td>
+        <td><select id="auto-hp"></select></td>
+        <td><button id="auto-add" class="icon-btn">Add</button></td>
+      </tr></tfoot>
+    </table>
+    <div id="auto-status" class="status"></div>
   </div>
 
   <div class="caveats">
@@ -1397,9 +1447,123 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
   });
 
+  // ── Service features: favorites + auto per input ───────────────
+  // Only present when served by wiim_eq_service.py (it adds /api/v1).
+  const favBtn = $("fav-btn"), favChips = $("fav-chips");
+  let favorites = [], knownDevices = [];
+
+  async function api(method, path, body) {
+    const r = await fetch("/api/v1" + path, {
+      method, headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const j = await r.json().catch(() => ({ ok: false, error: `HTTP ${r.status}` }));
+    if (!j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    return j;
+  }
+
+  function isFavorite(hp) { return hp && favorites.some(f => f.path === hp.path); }
+
+  function renderFavorites() {
+    favChips.innerHTML = "";
+    if (!favorites.length) {
+      favChips.innerHTML = '<span class="muted">none yet — search below and star one</span>';
+    }
+    favorites.forEach(f => {
+      const b = document.createElement("button");
+      b.className = "chip" + (selectedHp && selectedHp.path === f.path ? " active" : "");
+      b.textContent = "★ " + f.name;
+      b.title = f.path;
+      b.addEventListener("click", () => { selectHeadphone(f); renderFavorites(); });
+      favChips.appendChild(b);
+    });
+    favBtn.disabled = !selectedHp;
+    favBtn.textContent = isFavorite(selectedHp) ? "★ Remove from favorites" : "☆ Add to favorites";
+    const hpOpts = $("auto-hp");
+    hpOpts.innerHTML = "";
+    [...favorites.map(f => [f.path, f.name]), ["off", "EQ off"]].forEach(([v, t]) => {
+      const o = document.createElement("option"); o.value = v; o.textContent = t; hpOpts.appendChild(o);
+    });
+  }
+
+  favBtn.addEventListener("click", async () => {
+    if (!selectedHp) return;
+    try {
+      const j = isFavorite(selectedHp)
+        ? await api("DELETE", "/favorites", { path: selectedHp.path })
+        : await api("POST", "/favorites", { name: selectedHp.name, path: selectedHp.path });
+      favorites = j.favorites;
+      renderFavorites();
+    } catch (e) { setStatus(applyStat, "✗ favorites: " + e.message, "err"); }
+  });
+
+  function favName(path) {
+    if (path === "off") return "EQ off";
+    const f = favorites.find(f => f.path === path);
+    return f ? f.name : path.split("/").pop();
+  }
+
+  function renderAuto(auto) {
+    const body = $("auto-body");
+    body.innerHTML = "";
+    const rows = [];
+    Object.entries(auto).forEach(([dev, per]) =>
+      Object.entries(per).forEach(([src, hp]) => rows.push([dev, src, hp])));
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="4" class="muted">no rules yet</td></tr>';
+    }
+    rows.sort().forEach(([dev, src, hp]) => {
+      const tr = document.createElement("tr");
+      [dev, src, favName(hp)].forEach(t => {
+        const td = document.createElement("td"); td.textContent = t; tr.appendChild(td);
+      });
+      const td = document.createElement("td");
+      const x = document.createElement("button");
+      x.className = "icon-btn"; x.textContent = "✕"; x.title = "remove rule";
+      x.addEventListener("click", async () => {
+        try { renderAuto((await api("PUT", "/auto", { device: dev, source: src, headphone: null })).auto); }
+        catch (e) { setStatus($("auto-status"), "✗ " + e.message, "err"); }
+      });
+      td.appendChild(x); tr.appendChild(td); body.appendChild(tr);
+    });
+    const devSel = $("auto-dev");
+    devSel.innerHTML = "";
+    knownDevices.forEach(d => {
+      const o = document.createElement("option"); o.value = d.name; o.textContent = d.name; devSel.appendChild(o);
+    });
+  }
+
+  $("auto-add").addEventListener("click", async () => {
+    const st = $("auto-status");
+    try {
+      const j = await api("PUT", "/auto", {
+        device: $("auto-dev").value, source: $("auto-src").value, headphone: $("auto-hp").value,
+      });
+      renderAuto(j.auto);
+      setStatus(st, "✓ saved", "ok");
+    } catch (e) { setStatus(st, "✗ " + e.message, "err"); }
+  });
+
+  async function initService() {
+    try {
+      const fj = await api("GET", "/favorites");
+      favorites = fj.favorites;
+    } catch (_) { return; }  // plain web UI — no service features
+    document.body.classList.add("svc");
+    favBtn.style.display = "";
+    try { knownDevices = (await api("GET", "/devices")).devices; } catch (_) {}
+    renderFavorites();
+    try { renderAuto((await api("GET", "/auto")).auto); } catch (_) {}
+  }
+
+  // keep the star button in sync with the selected headphone
+  const _origSelect = selectHeadphone;
+  selectHeadphone = function (hp) { _origSelect(hp); if (document.body.classList.contains("svc")) renderFavorites(); };
+
   // ── Boot ─────────────────────────────────────────────────────────
   loadHeadphones();
   discoverDevices();
+  initService();
 </script>
 </body>
 </html>
